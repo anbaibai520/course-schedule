@@ -312,17 +312,24 @@ button{cursor:pointer;border:0;background:none}
 .srow-hd .sday{flex:1;min-width:0;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);outline:none;font-size:13px}
 .srow .del{flex:0 0 27px;height:27px;border-radius:8px;color:var(--muted);display:flex;align-items:center;justify-content:center;background:var(--panel);border:1px solid var(--line);cursor:pointer}
 .srow .del:hover{color:#e5484d}
-.srow-tm{display:flex;align-items:center;gap:8px}
-.srow-tm .to{color:var(--muted);font-weight:600;flex:none}
+.srow-tm{display:flex;align-items:flex-start;gap:8px}
+.srow-tm .to{color:var(--muted);font-weight:700;flex:none;height:96px;display:flex;align-items:center;font-size:15px}
 .srow .loc{margin-top:7px;width:100%;box-sizing:border-box;padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:var(--panel);outline:none;min-width:0;font-size:13px}
 .srow .loc:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent)}
-.tcol{flex:1;min-width:0;height:72px;overflow-y:auto;scroll-snap-type:y mandatory;position:relative;border:1px solid var(--line);border-radius:10px;background:var(--panel);overscroll-behavior:contain;scrollbar-width:none;cursor:ns-resize}
+.tmc{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.tmc .tcol{width:100%}
+.tmc-cap{font-size:10px;color:var(--muted);text-align:center;font-weight:600;letter-spacing:.5px;line-height:12px;user-select:none}
+.tcol{position:relative;overflow-y:auto;scroll-snap-type:y mandatory;scroll-snap-stop:normal;border:1px solid var(--line);border-radius:12px;background:var(--panel);overscroll-behavior:contain;scrollbar-width:none;cursor:ns-resize;height:96px}
 .tcol::-webkit-scrollbar{display:none}
-.tcol .cur{position:absolute;left:3px;right:3px;top:calc(50% - 12px);height:24px;border-radius:7px;background:color-mix(in srgb,var(--accent) 13%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 30%,transparent);pointer-events:none;z-index:1}
-.tcol .cap{position:sticky;top:0;z-index:2;display:block;font-size:9.5px;letter-spacing:.4px;color:var(--muted);text-align:center;line-height:14px;background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(2px);font-weight:600;pointer-events:none}
-.tcol .opts{padding:12px 0}
-.tcol .opt{height:24px;line-height:24px;text-align:center;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;scroll-snap-align:center;user-select:none;cursor:pointer;position:relative;z-index:0;transition:color .1s}
-.tcol .opt.on{color:var(--accent);font-weight:600;font-size:13.5px}
+/* 中间高亮胶囊：盖在当前格，选中的时间就在这条带子里 */
+.tcol .cur{position:absolute;left:5px;right:5px;top:calc(50% - 16px);height:32px;border-radius:9px;background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 22%,transparent),color-mix(in srgb,var(--accent) 8%,transparent));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 48%,transparent);pointer-events:none;z-index:1}
+/* 顶/底固定渐变罩：选项滚入罩下渐隐，营造“收进容器”的纵深感 */
+.tcol::before,.tcol::after{content:"";position:absolute;left:1px;right:1px;height:20px;pointer-events:none;z-index:5}
+.tcol::before{top:0;background:linear-gradient(180deg,var(--panel),transparent)}
+.tcol::after{bottom:0;background:linear-gradient(0deg,var(--panel),transparent)}
+.tcol .opts{padding:34px 0}
+.tcol .opt{height:32px;line-height:32px;text-align:center;font-size:13.5px;color:var(--muted);font-variant-numeric:tabular-nums;scroll-snap-align:center;user-select:none;cursor:pointer;position:relative;z-index:0;transition:color .12s,font-size .12s;font-weight:400}
+.tcol .opt.on{color:var(--accent);font-weight:700;font-size:16px;letter-spacing:.3px}
 .shead{display:none}
 .tm-hint{font-size:11px;color:var(--muted);margin:2px 0 4px;line-height:1.5}
 .addlink{color:var(--accent);font-size:13px;font-weight:600;padding:6px 0}
@@ -442,10 +449,10 @@ button{cursor:pointer;border:0;background:none}
   .setrow .lb{font-size:13px}
   .setrow .lb small{font-size:11px}
   .srow-hd .sday{font-size:14px}
-  .tcol{height:80px}
-  .tcol .opt{height:26px;line-height:26px}
-  .tcol .opts{padding:13px 0}
-  .tcol .cur{top:calc(50% - 13px);height:26px}
+  /* 时间选择列：小屏稍增高一点方便拇指拖，遮罩/胶囊沿用基础样式 */
+  .tcol{height:104px}
+  .tcol .opts{padding:38px 0}
+  .srow-tm .to{height:104px}
   .shead{display:none}
   .blk .bn{font-size:12.5px}
   .blk .bt{font-size:10px}
@@ -1088,10 +1095,13 @@ function tmCol(v, role, capLabel){
   for (let t = base; t < cap; t += step) times.push(t);
   const items = times.map((t, i) =>
     `<div class="opt${i === idx ? ' on' : ''}" data-min="${t}" data-i="${i}">${fmt(t)}</div>`).join('');
-  return `<span class="tcol s${role === 'start' ? 'start' : 'end'}" data-role="${role}"
-      data-min="${v}" data-idx="${idx}" data-cap="${capLabel}">
-      <span class="cap">${capLabel}</span><div class="cur"></div>
-      <div class="opts">${items}</div></span>`;
+  return `<span class="tmc">
+      <span class="tmc-cap">${capLabel}</span>
+      <span class="tcol s${role === 'start' ? 'start' : 'end'}" data-role="${role}"
+          data-min="${v}" data-idx="${idx}">
+        <div class="cur"></div>
+        <div class="opts">${items}</div>
+      </span></span>`;
 }
 
 function renderEditor(){
@@ -1125,7 +1135,7 @@ function renderEditor(){
             <input class="loc" placeholder="地点（选填）" value="${esc(s.location)}">
           </div>`).join('')}
       </div>
-      <div class="tm-hint">开始 / 结束：上下滑动或拖动中间高亮条选时间</div>
+      <div class="tm-hint">上下滑动把时间滚进中间带即可选中；点某条时间可快速跳过去。</div>
       <button class="addlink" id="fAddSession">＋ 添加时间段</button>
     </div>`;
 
