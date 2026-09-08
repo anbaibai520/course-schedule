@@ -2520,6 +2520,55 @@ function cloudPersist(){
 const cloudUid = () => (cloud.session && cloud.session.user && cloud.session.user.id) || null;
 const cloudOn  = () => !!cloudUid();
 
+/* ---------------------------------------------------------------------
+   用户名 → 账号
+   Supabase 的账号体系底层只认邮箱，但用户只想记一个用户名。
+   做法：把用户名映射成一个内部邮箱「用户名@cs.local」，用户全程无感。
+   · cs.local 不是真实域名；项目已关闭邮箱验证，不会真的发信
+   · 非 ASCII 字符（中文、emoji）编码成 -十六进制-，保证纯 ASCII 且可逆
+   · 用户名禁止出现 - ，因此编码结果不会与原样字符产生歧义
+   · 唯一性由邮箱保证：ASCII 字母统一转小写，Zhang / zhang 视为同一账号
+   --------------------------------------------------------------------- */
+const CLOUD_MAIL_HOST = 'cs.local';
+function nameToLocal(name){
+  let s = '';
+  for (const ch of String(name || '')){
+    if (/[A-Z]/.test(ch)) s += ch.toLowerCase();
+    else if (/[a-z0-9_.]/.test(ch)) s += ch;
+    else s += '-' + ch.codePointAt(0).toString(16) + '-';
+  }
+  return s;
+}
+function localToName(local){
+  return String(local).replace(/-([0-9a-f]+)-/g, (m, h) => {
+    try { return String.fromCodePoint(parseInt(h, 16)); } catch (e){ return m; }
+  });
+}
+const nameToEmail = name => nameToLocal(name) + '@' + CLOUD_MAIL_HOST;
+function emailToName(email){
+  const s = String(email || '');
+  const at = s.lastIndexOf('@');
+  if (at < 0) return s;
+  if (s.slice(at + 1).toLowerCase() !== CLOUD_MAIL_HOST) return s;   /* 老邮箱账号原样显示 */
+  return localToName(s.slice(0, at)) || s;
+}
+/* 用户名合法性；返回空串表示通过，否则是错误提示 */
+function nameCheck(v){
+  if (v.length < 2) return '用户名至少 2 个字符';
+  if (v.length > 20) return '用户名最多 20 个字符';
+  if (/[\s\-@]/.test(v)) return '用户名不能含空格、@ 或短横线 -';
+  if (/^\./.test(v) || /\.\./.test(v)) return '用户名不能以点开头，也不能含连续的点';
+  if (nameToLocal(v).length > 60) return '用户名太长了，精简一点';
+  return '';
+}
+/* 当前账号的展示名：优先昵称，其次从内部邮箱反解 */
+function cloudNick(){
+  if (cloud.profile && cloud.profile.nickname) return cloud.profile.nickname;
+  const n = emailToName((cloud.session && cloud.session.user && cloud.session.user.email) || '');
+  const at = n.indexOf('@');
+  return at > 0 ? n.slice(0, at) : n;   /* 老邮箱账号只显示 @ 前面的部分，不暴露完整邮箱 */
+}
+
 async function cFetch(path, opts){
   opts = opts || {};
   const h = { apikey: cloud.cfg.key, 'Content-Type': 'application/json', Accept: 'application/json' };
@@ -2569,6 +2618,20 @@ async function cloudSignUp(email, password){
   }
   return 'confirm';   /* 项目开了邮箱验证，需要去收邮件 */
 }
+/* 把用户名写进 profiles.nickname（同学看到的就是这个名字） */
+async function cloudSaveNick(name){
+  const uid = cloudUid(); if (!uid || !name) return;
+  try {
+    await cAuto('/rest/v1/profiles?id=eq.' + uid, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ nickname: name })
+    });
+    if (cloud.profile) cloud.profile.nickname = name;
+    else cloud.profile = { id: uid, nickname: name, share_code: '' };
+    cloudPersist();
+  } catch (e) {}
+}
 async function cloudHello(){
   const uid = cloudUid();
   try {
@@ -2576,6 +2639,9 @@ async function cloudHello(){
     cloud.profile = (r && r[0]) || null;
   } catch (e){ cloud.profile = null; }
   cloudPersist();
+  /* 昵称是空的（老账号或异常）→ 用内部邮箱反解出的用户名补一次 */
+  const derived = emailToName((cloud.session && cloud.session.user && cloud.session.user.email) || '');
+  if (derived && !(cloud.profile && cloud.profile.nickname)) cloudSaveNick(derived);
   try { _cloudBusy = true; await cloudPull(); cloud.status = 'on'; cloud.error = ''; }
   catch (e){ cloud.status = 'error'; cloud.error = String(e.message || e); }
   finally { _cloudBusy = false; }
@@ -2702,6 +2768,17 @@ function cloudStatusText(){
   if (cloud.status === 'error') return '同步失败（本地仍可用）';
   return '已同步';
 }
+/* 把 Supabase 的英文报错翻成人话 */
+function cloudErrText(e, mode){
+  const m = String((e && e.message) || e || '');
+  if (/Invalid login credentials/i.test(m)) return '用户名或密码不对';
+  if (/User already registered|already been registered/i.test(m)) return '这个用户名已经被注册了，点「登录」试试';
+  if (/Email rate limit|over_email_send_rate_limit/i.test(m)) return '操作太频繁了，等一分钟再试';
+  if (/Password should be|weak password|too short/i.test(m)) return '密码太简单了，换一个复杂点的';
+  if (/unable to validate email|invalid format|Unable to validate/i.test(m)) return '这个用户名系统不支持，换一个试试';
+  if (/Failed to fetch|NetworkError|Network request failed|Load failed/i.test(m)) return '连不上服务器，检查网络后再试';
+  return (mode === 'up' ? '注册失败：' : '登录失败：') + m;
+}
 function renderCloud(){
   const box = $('#cloudBox'); if (!box) return;
   const CFG = `
@@ -2709,15 +2786,36 @@ function renderCloud(){
     <input id="cfUrl" placeholder="Project URL" value="${esc(cloud.cfg.url)}" style="width:100%;box-sizing:border-box;margin-bottom:6px">
     <input id="cfKey" placeholder="anon public key（eyJhbGci...）" value="${esc(cloud.cfg.key)}" style="width:100%;box-sizing:border-box">
     <button class="btn primary" id="cfSave" style="margin-top:8px;width:100%">保存并继续</button>`;
-  const LOGIN = `
-    <div class="hint" style="margin-bottom:8px">登录后课表会自动在多台设备间同步，同学输入你的分享码就能看到你的空闲时间。</div>
-    <input id="clEmail" type="email" placeholder="邮箱" autocomplete="email" style="width:100%;box-sizing:border-box;margin-bottom:6px">
-    <input id="clPass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password" style="width:100%;box-sizing:border-box">
-    <div style="display:flex;gap:8px;margin-top:10px">
-      <button class="btn primary" id="clIn" style="flex:1">登录</button>
-      <button class="btn" id="clUp" style="flex:1">注册</button>
+  const VIEW_INTRO = `
+    <div class="hint" style="margin-bottom:12px">起个用户名就能用，<b>不用邮箱</b>。登录后课表在多台设备间自动同步，同学输入你的分享码就能看到彼此的空闲时间。</div>`;
+  const VIEW_LOGIN = VIEW_INTRO + `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span style="font-size:17px;font-weight:700;flex:1">登录</span>
+      <span style="font-size:12.5px;color:var(--muted)">还没有账号？</span>
+      <button class="btn" id="authGoUp" style="padding:7px 12px">去注册</button>
     </div>
+    <input class="inp" id="clName" placeholder="用户名" autocomplete="username" maxlength="60" style="margin-bottom:6px">
+    <input class="inp" id="clPass" type="password" placeholder="密码" autocomplete="current-password" style="margin-bottom:6px">
+    <label style="display:flex;align-items:center;gap:6px;margin:2px 0 12px;font-size:12px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" id="clShowIn" style="width:auto;min-height:0;height:auto;margin:0;padding:0">显示密码
+    </label>
+    <button class="btn primary" id="clGoIn" style="width:100%">登录</button>
     <div id="clMsg" class="hint" style="margin-top:10px"></div>`;
+  const VIEW_UP = VIEW_INTRO + `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span style="font-size:17px;font-weight:700;flex:1">注册新账号</span>
+      <span style="font-size:12.5px;color:var(--muted)">已有账号？</span>
+      <button class="btn" id="authBackIn" style="padding:7px 12px">去登录</button>
+    </div>
+    <input class="inp" id="clName" placeholder="给自己起个用户名（2-20 位，中文也可以）" autocomplete="username" maxlength="20" style="margin-bottom:6px">
+    <input class="inp" id="clPass" type="password" placeholder="设一个密码（至少 6 位）" autocomplete="new-password" style="margin-bottom:6px">
+    <input class="inp" id="clPass2" type="password" placeholder="再输入一次密码" autocomplete="new-password" style="margin-bottom:6px">
+    <label style="display:flex;align-items:center;gap:6px;margin:2px 0 12px;font-size:12px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" id="clShowUp" style="width:auto;min-height:0;height:auto;margin:0;padding:0">显示密码
+    </label>
+    <button class="btn primary" id="clGoUp" style="width:100%">注册并登录</button>
+    <div class="hint" style="margin-top:10px;line-height:1.5">注册即表示课表会存到云端，可在不同设备间同步。注册完你的「分享码」会显示在下方，同学输入它就能订阅你的课表。</div>
+    <div id="clMsg" class="hint" style="margin-top:6px"></div>`;
   const code = (cloud.profile && cloud.profile.share_code) || '——';
   const subsHtml = state.people.filter(p => p.cloud).map(p => `
     <div class="setrow" style="align-items:center">
@@ -2730,7 +2828,7 @@ function renderCloud(){
       <div id="myCode" style="font-size:26px;font-weight:600;letter-spacing:4px;font-family:var(--font-mono,monospace);color:var(--accent)">${esc(code)}</div>
       <button class="btn" id="copyCode" style="margin-top:8px">复制分享码</button>
     </div>
-    <div class="hint" style="margin:10px 0">已登录：${esc((cloud.session && cloud.session.user && cloud.session.user.email) || '')} · ${esc(cloudStatusText())}</div>
+    <div class="hint" style="margin:10px 0">已登录：<b>${esc(cloudNick() || '—')}</b> · ${esc(cloudStatusText())}</div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
       <button class="btn" id="pullNow" style="flex:1">从云端拉取</button>
       <button class="btn" id="pushNow" style="flex:1">上传到云端</button>
@@ -2746,55 +2844,86 @@ function renderCloud(){
       <button class="btn danger" id="clOut" style="flex:1">退出登录</button>
       <button class="btn" id="clCfg" style="flex:1">修改配置</button>
     </div>`;
-  box.innerHTML = !cloud.cfg.key ? CFG : (cloudOn() ? HOME : LOGIN);
-  const msg = $('#clMsg');
-  const say = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--danger,#e5484d)' : ''; } };
-
-  if (!cloud.cfg.key){
-    $('#cfSave').onclick = () => {
-      cloud.cfg.url = ($('#cfUrl').value || '').trim().replace(/\/+$/, '');
-      cloud.cfg.key = ($('#cfKey').value || '').trim();
-      if (!cloud.cfg.key) return;
-      cloudPersist(); renderCloud();
+  box.innerHTML = !cloud.cfg.key ? CFG : (cloudOn() ? HOME : '');
+  if (!cloud.cfg.key || cloudOn()){
+    const msg = $('#clMsg');
+    const say = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--danger,#e5484d)' : ''; } };
+    if (!cloud.cfg.key){
+      $('#cfSave').onclick = () => {
+        cloud.cfg.url = ($('#cfUrl').value || '').trim().replace(/\/+$/, '');
+        cloud.cfg.key = ($('#cfKey').value || '').trim();
+        if (!cloud.cfg.key) return;
+        cloudPersist(); renderCloud();
+      };
+      return;
+    }
+    $('#copyCode').onclick = () => {
+      const c = (cloud.profile && cloud.profile.share_code) || '';
+      if (navigator.clipboard) navigator.clipboard.writeText(c).then(() => say('已复制：' + c), () => say('分享码：' + c));
+      else say('分享码：' + c);
     };
-    return;
-  }
-  if (!cloudOn()){
-    const go = async (mode) => {
-      const email = ($('#clEmail').value || '').trim();
-      const pass = $('#clPass').value || '';
-      if (!email || pass.length < 6) return say('请填写邮箱，密码至少 6 位', true);
+    $('#pullNow').onclick = async () => { say('拉取中…'); try { _cloudBusy = true; await cloudHello(); say('已用云端数据覆盖本机'); renderCloud(); } catch (e){ say('拉取失败：' + (e.message || e), true); } finally { _cloudBusy = false; } };
+    $('#pushNow').onclick = async () => { say('上传中…'); try { await cloudPush(); say('已上传本机课表'); } catch (e){ say('上传失败：' + (e.message || e), true); } };
+    $('#subAdd').onclick = async () => {
+      const v = $('#subCode').value || '';
       say('处理中…');
-      try {
-        if (mode === 'up'){
-          const r = await cloudSignUp(email, pass);
-          if (r === 'confirm'){ say('注册成功，请先到邮箱点确认链接再登录', true); return; }
-        } else await cloudSignIn(email, pass);
-        renderCloud();
-      } catch (e){ say('失败：' + (e.message || e), true); }
+      try { const t = await cloudSubscribe(v); say('已订阅 ' + (t.nickname || '同学')); renderCloud(); render(); }
+      catch (e){ say(e.message || String(e), true); }
     };
-    $('#clIn').onclick = () => go('in');
-    $('#clUp').onclick = () => go('up');
+    box.querySelectorAll('[data-unsub]').forEach(b => b.onclick = async () => {
+      try { await cloudUnsubscribe(b.dataset.unsub); renderCloud(); render(); } catch (e){ say(e.message || String(e), true); }
+    });
+    $('#clOut').onclick = () => { cloudSignOut(); renderCloud(); };
+    $('#clCfg').onclick = () => { cloud.cfg.key = ''; cloudPersist(); renderCloud(); };
     return;
   }
-  $('#copyCode').onclick = () => {
-    const c = (cloud.profile && cloud.profile.share_code) || '';
-    if (navigator.clipboard) navigator.clipboard.writeText(c).then(() => say('已复制：' + c), () => say('分享码：' + c));
-    else say('分享码：' + c);
+  /* 未登录：弹窗内两页跳转 —— 先登录页，可「去注册」切到注册页，注册页可「去登录」返回 */
+  const showAuth = (view) => {
+    box.innerHTML = (view === 'up') ? VIEW_UP : VIEW_LOGIN;
+    const msg = $('#clMsg');
+    const say = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--danger,#e5484d)' : ''; } };
+    const goIn = $('#authGoIn'), goUp = $('#authGoUp'), backIn = $('#authBackIn');
+    if (goUp) goUp.onclick = () => { showAuth('up'); };
+    if (backIn) backIn.onclick = () => { showAuth('in'); };
+    const showChk = $('#clShowIn') || $('#clShowUp');
+    if (showChk) showChk.onchange = () => {
+      const t = showChk.checked ? 'text' : 'password';
+      ['#clPass', '#clPass2'].forEach(sel => { const el = $(sel); if (el) el.type = t; });
+    };
+    const mode = (view === 'up') ? 'up' : 'in';
+    const btn = $('#clGo' + (view === 'up' ? 'Up' : 'In'));
+    const submit = () => {
+      const name = String(($('#clName') || {}).value || '').trim();
+      const pass = ($('#clPass') || {}).value || '';
+      const pass2 = ($('#clPass2') || {}).value || '';
+      const isMail = name.indexOf('@') >= 0;      /* 老账号仍可用邮箱登录 */
+      if (!name) return say(mode === 'up' ? '请先给自己起个用户名' : '请输入用户名', true);
+      if (!isMail){ const bad = nameCheck(name); if (bad) return say(bad, true); }
+      if (pass.length < 6) return say('密码至少 6 位', true);
+      if (mode === 'up' && pass !== pass2) return say('两次输入的密码不一致', true);
+      say('处理中…');
+      const email = isMail ? name.toLowerCase() : nameToEmail(name);
+      (async () => {
+        try {
+          if (mode === 'up'){
+            /* 用户名唯一性由服务端邮箱保证；若已注册，SignUp 会抛 User already registered，
+               由 cloudErrText 翻成人话「已被注册」。无需本地 ilike 预查（匿名读不到别人，查了也白查）。 */
+            const r = await cloudSignUp(email, pass);
+            if (r === 'confirm'){ say('这个用户名可能已被注册，试试「去登录」', true); return; }
+            await cloudSaveNick(name);
+          } else await cloudSignIn(email, pass);
+          renderCloud();
+        } catch (e){ say(cloudErrText(e, mode), true); }
+      })();
+    };
+    if (btn) btn.onclick = submit;
+    ['clName', 'clPass', 'clPass2'].forEach(id => {
+      const el = $('#' + id);
+      if (el) el.onkeydown = e => { if (e.key === 'Enter'){ e.preventDefault(); submit(); } };
+    });
+    if (mode === 'up'){ const nm = $('#clName'); if (nm) nm.focus(); }
   };
-  $('#pullNow').onclick = async () => { say('拉取中…'); try { _cloudBusy = true; await cloudHello(); say('已用云端数据覆盖本机'); renderCloud(); } catch (e){ say('拉取失败：' + (e.message || e), true); } finally { _cloudBusy = false; } };
-  $('#pushNow').onclick = async () => { say('上传中…'); try { await cloudPush(); say('已上传本机课表'); } catch (e){ say('上传失败：' + (e.message || e), true); } };
-  $('#subAdd').onclick = async () => {
-    const v = $('#subCode').value || '';
-    say('处理中…');
-    try { const t = await cloudSubscribe(v); say('已订阅 ' + (t.nickname || '同学')); renderCloud(); render(); }
-    catch (e){ say(e.message || String(e), true); }
-  };
-  box.querySelectorAll('[data-unsub]').forEach(b => b.onclick = async () => {
-    try { await cloudUnsubscribe(b.dataset.unsub); renderCloud(); render(); } catch (e){ say(e.message || String(e), true); }
-  });
-  $('#clOut').onclick = () => { cloudSignOut(); renderCloud(); };
-  $('#clCfg').onclick = () => { cloud.cfg.key = ''; cloudPersist(); renderCloud(); };
+  showAuth('in');
 }
 
 /* ---------------- 首次引导（可跳过，只弹一次） ---------------- */
@@ -2809,7 +2938,7 @@ function openCloudGate(){
     <div class="hint" style="margin-top:10px">
       · 手机上改课表，电脑打开自动就是新的<br>
       · 不用再导出 JSON 传来传去<br>
-      · 注册只要邮箱和密码，十几秒搞定
+      · 起个用户名和密码，十几秒搞定
     </div>
     <div class="hint" style="margin-top:10px">
       不注册也能用，课表会存在这台设备的浏览器里。之后随时可以在「设置 → 云同步」里开启。
