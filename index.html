@@ -115,6 +115,17 @@ button{cursor:pointer;border:0;background:none}
 .w-geo-btn{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--accent);cursor:pointer;background:none;border:0;padding:4px 0}
 .w-geo-btn:hover{text-decoration:underline}
 .w-loc-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+/* 城市候选列表（解决同名地点误判，如「长春」既有吉林省会也有黑龙江的镇） */
+.wcity-list{display:flex;flex-direction:column;gap:6px;margin-top:10px;max-height:230px;overflow:auto}
+.wcity-opt{display:flex;align-items:center;gap:8px;padding:9px 11px;border:1px solid var(--line);
+  border-radius:10px;background:var(--panel2);cursor:pointer;transition:.15s}
+.wcity-opt:hover{border-color:color-mix(in srgb,var(--accent) 55%,var(--line))}
+.wcity-opt.rec{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--panel2))}
+.wcity-opt b{font-size:13.5px;font-weight:600;flex:0 0 auto}
+.wcity-opt span{font-size:12px;color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wcity-opt em{flex:0 0 auto;font-size:10.5px;font-style:normal;color:var(--accent);
+  border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);border-radius:5px;padding:1px 5px}
+.wcity-empty{font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.5}
 
 /* ============ 多人叠加对比 ============ */
 .cmp-layer{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;padding:14px;--ok:#2fb37a;--acc:var(--accent)}
@@ -1663,14 +1674,51 @@ async function revCity(lat, lon){
   return fmtCoord(lat, lon);
 }
 function fmtCoord(lat, lon){ return lat.toFixed(2) + ', ' + lon.toFixed(2); }
-/* 城市名/拼音 → 坐标（geocoding） */
-async function geoCity(q){
-  const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&language=zh&format=json&name=' + encodeURIComponent(q));
-  const j = await r.json();
-  const hit = j && j.results && j.results[0];
-  if (!hit) throw new Error('no-city');
-  return { lat: hit.latitude, lon: hit.longitude, city: hit.admin1 ? (hit.name + (hit.name === hit.admin1 ? '' : ' · ' + hit.admin1)) : hit.name };
+/* 城市名/拼音 → 候选坐标列表（geocoding）
+   ---------------------------------------------------------------------
+   坑（已实测）：Open-Meteo 的中文检索是**精确名匹配**。搜「长春」返回的第一条
+   是黑龙江省齐齐哈尔市下辖的长春镇（PPLA4、无人口数据），而吉林省会的登记名
+   是「长春市」，根本不出现在「长春」的前 10 条结果里。
+   对策三条：
+     ① 原名与「原名 + 市」各查一遍再合并去重 —— 让「长春市」有机会进候选池；
+     ② 按 行政等级(feature_code) + 人口 打分排序 —— 省会(PPLA)与镇(PPLA4)拉开差距；
+     ③ 不替用户自动拍板，把候选列出来让他点 —— 同名地点全国太多了。 */
+const FC_SCORE = { PPLC:100, PPLA:90, PPLA2:72, PPLA3:56, PPLA4:38, PPLX:26, PPL:24 };
+function cityScore(h){
+  let s = FC_SCORE[h.feature_code] || 12;
+  const pop = Number(h.population) || 0;
+  if (pop > 0) s += Math.min(38, Math.log10(pop) * 6);   // 人口越多越可能是你要的那个
+  if (h.country_code === 'CN') s += 6;                   // 国内用户优先国内结果
+  return s;
 }
+function cityLabel(h){
+  const prov = h.admin1 || '';
+  // admin2 若已是 name 的前缀（如 name=长春市 / admin2=长春）就不重复显示
+  const sub = (h.admin2 && h.admin2 !== prov && !String(h.name || '').startsWith(h.admin2)) ? h.admin2 : '';
+  const region = [prov, sub].filter(Boolean).join(' · ');
+  return { name: h.name, region, city: h.name + (prov ? ' · ' + prov : '') };
+}
+async function geoCities(q){
+  const names = [q];
+  if (!/市$/.test(q)) names.push(q + '市');   // 补查「XX市」，省级市多以此为登记名
+  const seen = new Set(), hits = [];
+  for (const n of names){
+    try {
+      const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=10&language=zh&format=json&name=' + encodeURIComponent(n));
+      const j = await r.json();
+      for (const h of ((j && j.results) || [])){
+        if (seen.has(h.id)) continue;
+        seen.add(h.id); hits.push(h);
+      }
+    } catch (e) { /* 单次失败不影响另一次查询 */ }
+  }
+  if (!hits.length) throw new Error('no-city');
+  return hits
+    .map(h => Object.assign({ id: h.id, lat: h.latitude, lon: h.longitude, score: cityScore(h) }, cityLabel(h)))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+}
+async function geoCity(q){ const list = await geoCities(q); return list[0]; }
 /* 坐标 → 当天实时天气 */
 async function fetchWeather(lat, lon){
   const u = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon +
@@ -1794,15 +1842,33 @@ function openCityPick(){
       <div class="w-loc-row"><span class="w-tip">当前：${weather.city || '尚未定位'}</span></div>
       <button class="w-geo-btn" id="wUseGeo">${locIcon()} 使用我的位置</button>
       <div class="w-manual">
-        <input class="inp" id="wCityInput" placeholder="例如：南京 / 上海 / 北京" autocomplete="off">
+        <input class="inp" id="wCityInput" placeholder="例如：长春 / 南京 / 北京" autocomplete="off">
         <button class="btn primary" id="wCityOk">查询</button>
       </div>
+      <div class="wcity-list" id="wCityList"></div>
     </div>`,
     `<div class="spacer"></div><button class="btn" data-close>取消</button>`);
+  const list = $('#wCityList');
+  const pick = async c => {
+    weatherBtnLoading(true);
+    weather.mode = 'manual'; weather.city = c.city; weather.lat = c.lat; weather.lon = c.lon;
+    weatherSave(); await refreshWeather(); weatherBtnLoading(false);
+    closeModal(); toast('已更新天气：' + weather.city);
+  };
   const go = async () => {
-    const v = String($('#wCityInput').value || '').trim(); if (!v) { $('#wCityInput').focus(); return; }
-    const ok2 = await useCity(v);
-    if (ok2) { closeModal(); toast('已更新天气：' + weather.city); }
+    const v = String($('#wCityInput').value || '').trim();
+    if (!v) { $('#wCityInput').focus(); return; }
+    list.innerHTML = '<div class="wcity-empty">正在查询…</div>';
+    let cands;
+    try { cands = await geoCities(v); }
+    catch (e) { list.innerHTML = '<div class="wcity-empty">查询失败，请检查网络后重试。</div>'; return; }
+    list.innerHTML = cands.map((c, i) =>
+      `<div class="wcity-opt${i === 0 ? ' rec' : ''}" data-i="${i}">
+         <b>${esc(c.name)}</b><span>${esc(c.region || '')}</span>${i === 0 ? '<em>推荐</em>' : ''}
+       </div>`).join('');
+    list.querySelectorAll('.wcity-opt').forEach(el => {
+      el.onclick = () => pick(cands[+el.dataset.i]);
+    });
   };
   $('#wUseGeo').onclick = () => { closeModal(); applyGeoAndRefresh(); };
   $('#wCityOk').onclick = go;
