@@ -473,6 +473,11 @@ button{cursor:pointer;border:0;background:none}
   /* 视图分段控件在小屏：三按钮自然宽，文字不换行 */
   .seg{padding:3px;flex-shrink:0}
   .seg button{padding:8px 12px;min-height:38px;white-space:nowrap;font-size:12.5px;flex:0 0 auto}
+  /* 顶栏"新增课程"主按钮：保留文字标签，让并排更清晰可点；fab 隐藏避免重复 */
+  #btnAdd{padding:8px 12px;min-height:40px;font-size:13.5px;flex-shrink:0}
+  #btnAdd .t{display:inline;margin-left:4px}
+  .topbar .btn.icon{padding:0;width:40px;height:40px}
+  .fab{display:none}
   .toolbar{top:84px;padding:7px 10px;gap:7px;row-gap:8px}
   .toolbar > .chips{min-width:0;flex:1}
   .scroll{padding:8px 8px calc(88px + env(safe-area-inset-bottom))}
@@ -1578,6 +1583,10 @@ function openSettings(){
       <div class="lb">清空「${esc(personName())}」的全部课程<small>不可恢复，请先备份（不影响其他课表）</small></div>
       <button class="btn danger" id="sClear">清空</button>
     </div>
+    <div class="setrow">
+      <div class="lb">恢复默认设置<small>外观、时间范围、周次等还原为初始默认值（不影响已录的课程数据）</small></div>
+      <button class="btn" id="sReset">恢复默认</button>
+    </div>
     <div class="hint" style="margin-top:12px">
       数据保存在本机浏览器（localStorage），换设备请用「备份」导出 JSON。
       快捷键：Ctrl/Cmd + S 导出备份。
@@ -1642,6 +1651,14 @@ function openSettings(){
       [{ label: '取消', value: 'no' }, { label: '确认清空', value: 'yes', cls: 'danger' }]);
     if (r !== 'yes') return;
     state.courses = []; save(); render(); closeModal(); toast('已清空');
+  };
+  $('#sReset').onclick = async () => {
+    const r = await askModal('恢复默认设置',
+      `将外观、时间范围、周次等全部恢复为初始默认值，<b>不影响已录的课程数据</b>。当前未保存的设置会丢失。`,
+      [{ label: '取消', value: 'no' }, { label: '恢复', value: 'yes' }]);
+    if (r !== 'yes') return;
+    Object.assign(state.settings, defaults().settings);  // 保留对象引用、字段全替换
+    save(); render(); closeModal(); toast('已恢复默认设置');
   };
 }
 
@@ -2799,11 +2816,23 @@ setInterval(() => {
    3) 订阅来的课表是只读副本，不上传、不污染自己的课表
    ===================================================================== */
 const CLOUD_LS = 'course-cloud-v1';
+const CLOUD_RM_LS = 'course-cloud-rm-v1';
 const CLOUD_DEFAULT_URL = 'https://mfrlinxxbtovltufwprw.supabase.co';
 /* anon public key：按 Supabase 的设计本就公开，真正的权限由数据库 RLS 规则控制 */
 const CLOUD_DEFAULT_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1mcmxpbnh4YnRvdmx0dWZ3cHJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NjE1NTUsImV4cCI6MjEwNDQzNzU1NX0.zYva2ZbK0RovAY8ddrha5dUVYnf0zcjGBiagSAXQqIE';
 const cloud = { cfg: { url: CLOUD_DEFAULT_URL, key: CLOUD_DEFAULT_KEY }, session: null, profile: null, subs: [], status: 'off', error: '' };
 let _cloudBusy = false, _pushT = 0;
+
+/* 记住账号密码：勾选后保存 {name, pass, auto}，打开云面板时静默登录一次 */
+function getRemembered(){
+  try { return JSON.parse(localStorage.getItem(CLOUD_RM_LS) || 'null'); } catch (e) { return null; }
+}
+function setRemembered(r){
+  try { localStorage.setItem(CLOUD_RM_LS, JSON.stringify(r || {})); } catch (e) {}
+}
+function clearRemembered(){
+  try { localStorage.removeItem(CLOUD_RM_LS); } catch (e) {}
+}
 
 function cloudLoad(){
   try {
@@ -3057,6 +3086,7 @@ async function cloudUnsubscribe(targetId){
 }
 function cloudSignOut(){
   cloudGateDone();   /* 主动退出过就不再弹引导了 */
+  clearRemembered(); /* 主动退出：忘记账号密码，避免本地残留 */
   cloudSignOutLocal();
   state.people = state.people.filter(p => !p.cloud);
   if (!state.people.some(p => p.id === state.activeId)) state.activeId = state.people[0].id;
@@ -3102,8 +3132,11 @@ function renderCloud(){
     </div>
     <input class="inp" id="clName" placeholder="用户名" autocomplete="username" maxlength="60" style="margin-bottom:6px">
     <input class="inp" id="clPass" type="password" placeholder="密码" autocomplete="current-password" style="margin-bottom:6px">
-    <label style="display:flex;align-items:center;gap:6px;margin:2px 0 12px;font-size:12px;color:var(--muted);cursor:pointer">
+    <label style="display:flex;align-items:center;gap:6px;margin:2px 0 6px;font-size:12px;color:var(--muted);cursor:pointer">
       <input type="checkbox" id="clShowIn" style="width:auto;min-height:0;height:auto;margin:0;padding:0">显示密码
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;margin:0 0 12px;font-size:12px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" id="clRemember" style="width:auto;min-height:0;height:auto;margin:0;padding:0">记住账号密码，下次自动登录
     </label>
     <button class="btn primary" id="clGoIn" style="width:100%">登录</button>
     <div id="clMsg" class="hint" style="margin-top:10px"></div>`;
@@ -3184,6 +3217,7 @@ function renderCloud(){
     return;
   }
   /* 未登录：弹窗内两页跳转 —— 先登录页，可「去注册」切到注册页，注册页可「去登录」返回 */
+  let _autoLoginTried = false;     // 本次面板打开后，只尝试一次静默登录
   const showAuth = (view) => {
     box.innerHTML = (view === 'up') ? VIEW_UP : VIEW_LOGIN;
     const msg = $('#clMsg');
@@ -3217,7 +3251,13 @@ function renderCloud(){
             const r = await cloudSignUp(email, pass);
             if (r === 'confirm'){ say('这个用户名可能已被注册，试试「去登录」', true); return; }
             await cloudSaveNick(name);
-          } else await cloudSignIn(email, pass);
+          } else {
+            await cloudSignIn(email, pass);
+            /* 登录成功：勾选"记住"则保存（覆盖旧账号），未勾选则清掉旧凭据 */
+            const rm = $('#clRemember');
+            if (rm && rm.checked) setRemembered({ name, pass });
+            else clearRemembered();
+          }
           renderCloud();
         } catch (e){ say(cloudErrText(e, mode), true); }
       })();
@@ -3228,6 +3268,30 @@ function renderCloud(){
       if (el) el.onkeydown = e => { if (e.key === 'Enter'){ e.preventDefault(); submit(); } };
     });
     if (mode === 'up'){ const nm = $('#clName'); if (nm) nm.focus(); }
+
+    /* 记住密码：预填表单 + 首次进入时静默尝试登录 */
+    if (mode === 'in') {
+      const rm = getRemembered();
+      if (rm && rm.name) {
+        const ne = $('#clName'), pe = $('#clPass'), ce = $('#clRemember');
+        if (ne && !ne.value) ne.value = rm.name;
+        if (pe && !pe.value) pe.value = rm.pass || '';
+        if (ce) ce.checked = true;
+        if (!_autoLoginTried) {
+          _autoLoginTried = true;
+          /* 静默登录失败时回退到表单（已预填好），不弹错误 */
+          setTimeout(async () => {
+            try {
+              const name = (rm.name || '').trim();
+              if (!name) return;
+              const email = name.indexOf('@') >= 0 ? name.toLowerCase() : nameToEmail(name);
+              await cloudSignIn(email, rm.pass || '');
+              renderCloud();
+            } catch (e) { /* 静默：不报错，用户看到已预填的表单可手动重登或改密码 */ }
+          }, 80);
+        }
+      }
+    }
   };
   showAuth('in');
 }
