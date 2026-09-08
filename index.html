@@ -1643,8 +1643,11 @@ const WMO = {
   95:{e:'⛈️',d:'⛈️',n:'⛈️',zh:'雷阵雨'}, 96:{e:'⛈️',d:'⛈️',n:'⛈️',zh:'雷雨伴冰雹'},
   99:{e:'⛈️',d:'⛈️',n:'⛈️',zh:'强雷暴伴冰雹'}
 };
-const weatherDefault = () => ({ mode:'geo', city:'', lat:null, lon:null, data:null, geoDenied:false, acc:null });
+const weatherDefault = () => ({ mode:'geo', city:'', lat:null, lon:null, data:null, geoDenied:false, acc:null,
+  geoNagAt:0, geoNagCount:0, geoNagOff:false, geoRetryAt:0 });
 let weather = weatherDefault();
+/* 是否正在定位中，供权限复查避让 */
+let geoRunning = false;
 function weatherLoad(){
   try { const raw = localStorage.getItem(WKEY); if (raw) weather = Object.assign(weatherDefault(), JSON.parse(raw)); }
   catch (e) { weather = weatherDefault(); }
@@ -1787,13 +1790,16 @@ function applyGeoAndRefresh(){
   if (!('geolocation' in navigator)) { geoFallback('此浏览器不支持定位'); return; }
   if (!window.isSecureContext) { geoFallback('非 HTTPS 环境无法定位'); return; }
   // 用户明确拒绝过 → 不再反复弹授权框，直接走 IP 兜底
+  // 注意：这不是永久判决，每次打开页面都会复查真实权限（见 geoNagCheck）
   if (weather.geoDenied) { geoFallback('已拒绝定位授权'); return; }
 
   weatherBtnLoading(true);
+  weather.geoRetryAt = Date.now(); weatherSave();
+  geoRunning = true;
   let best = null, settled = false, stopped = false;
   const ids = [];
   const stopAll = () => {
-    if (stopped) return; stopped = true;
+    if (stopped) return; stopped = true; geoRunning = false;
     ids.forEach(id => { try { navigator.geolocation.clearWatch(id); } catch (e) {} });
   };
 
@@ -1852,6 +1858,82 @@ function accText(acc){
   if (acc <= 500) return '较精确（±' + acc + ' 米）';
   if (acc <= 3000) return '大致范围（±' + (acc / 1000).toFixed(1) + ' 公里）';
   return '粗略定位（±' + Math.round(acc / 1000) + ' 公里）';
+}
+/* 定位权限复查 + 温和提醒
+   ---------------------------------------------------------------------
+   之前"拒绝过一次就永久不提"，等于把自动定位这条路焊死。但用户完全可能后来
+   在浏览器设置里改了主意，或者当时只是手滑点错。所以每次打开页面都复查一次
+   **真实**的权限状态：
+     已授权（含后来新授权的） → 静默重新定位，用户完全无感
+     仍未授权                 → 弹一次提醒，但做频率控制，不至于每次都烦
+   关键：Permissions API 查询**不会**触发授权弹窗，可以放心静默调用。
+   Safari 不支持该 API，此时退回看 geoDenied 标记。 */
+async function geoPermState(){
+  if (!navigator.permissions || !navigator.permissions.query) return 'unknown';
+  try {
+    const st = await navigator.permissions.query({ name: 'geolocation' });
+    return (st && st.state) ? st.state : 'unknown';
+  } catch (e) { return 'unknown'; }
+}
+const GEO_NAG_GAP = 20 * 3600 * 1000;   /* 最短提醒间隔：20 小时 */
+const GEO_NAG_MAX = 4;                  /* 最多提醒 4 次，之后彻底闭嘴 */
+async function geoNagCheck(depth){
+  depth = depth || 0;
+  if (depth > 3) return;
+  if (weather.geoNagOff) return;                       /* 用户明确说过别再提醒 */
+  if (weather.mode === 'manual') return;               /* 用户自己选的城市，不打扰 */
+  if (!('geolocation' in navigator) || !window.isSecureContext) return;
+  /* 已经够准了，没必要提醒 */
+  if (weather.mode === 'geo' && weather.acc != null && weather.acc <= 500) return;
+  /* 正在定位或有弹窗开着 → 等会儿再看，别添乱 */
+  if (geoRunning) { setTimeout(() => geoNagCheck(depth + 1), 9000); return; }
+  const m = $('#modal');
+  if (m && !m.hidden) { setTimeout(() => geoNagCheck(depth + 1), 6000); return; }
+
+  const st = await geoPermState();
+  /* 权限已恢复（或本来就有）→ 静默重定位，不弹任何东西 */
+  if (st === 'granted') {
+    if (weather.geoDenied || weather.mode === 'ip') {
+      if (Date.now() - (weather.geoRetryAt || 0) < 3600000) return;   /* 一小时内刚试过，别反复烧 GPS */
+      weather.geoDenied = false; weather.geoNagCount = 0; weather.geoNagAt = 0; weatherSave();
+      applyGeoAndRefresh();
+    }
+    return;
+  }
+  /* Safari 拿不到状态，只在明确拒绝过时才提醒 */
+  const needNag = (st === 'denied') || (st === 'prompt') || (st === 'unknown' && weather.geoDenied);
+  if (!needNag) return;
+  const now = Date.now();
+  if (weather.geoNagAt && now - weather.geoNagAt < GEO_NAG_GAP) return;
+  if ((weather.geoNagCount || 0) >= GEO_NAG_MAX) return;
+  weather.geoNagAt = now; weather.geoNagCount = (weather.geoNagCount || 0) + 1; weatherSave();
+  openGeoNag(st);
+}
+/* 未授权的提醒弹窗：给三条出路——重新定位 / 手动选城市 / 不再提醒 */
+function openGeoNag(state){
+  const blocked = (state === 'denied');
+  openModal('自动定位未开启',
+    `<div class="wbox">
+      <div class="w-tip">当前天气用的是<b>网络粗略定位（IP）</b>${weather.city ? '，显示的是 <b>' + esc(weather.city) + '</b>' : ''}，只能精确到城市，可能跟你的实际位置不一致。</div>
+      ${blocked
+        ? '<div class="w-tip">定位权限已被浏览器<b>永久拒绝</b>，需要你手动解除：点地址栏左侧的 <b>🔒 图标</b> → 位置 → 改为「允许」，再刷新页面。</div>'
+        : '<div class="w-tip">开启后天气会自动跟着你走，精度可达几十米。</div>'}
+      <button class="w-geo-btn" id="geoNagGo">${locIcon()} ${blocked ? '我已解除，重新定位' : '开启自动定位'}</button>
+    </div>`,
+    `<button class="btn" id="geoNagCity">手动选城市</button>
+     <div class="spacer"></div>
+     <button class="btn" id="geoNagOff">不再提醒</button>
+     <button class="btn primary" data-close>暂不</button>`);
+  const g = $('#geoNagGo');
+  if (g) g.onclick = () => {
+    closeModal();
+    weather.geoDenied = false; weather.geoRetryAt = 0; weatherSave();
+    applyGeoAndRefresh();
+  };
+  const c = $('#geoNagCity');
+  if (c) c.onclick = () => { closeModal(); openCityPick(); };
+  const o = $('#geoNagOff');
+  if (o) o.onclick = () => { weather.geoNagOff = true; weatherSave(); closeModal(); toast('已关闭定位提醒，可在天气设置里手动开启'); };
 }
 /* 用给定城市刷新（手动） */
 async function useCity(q){
@@ -2383,6 +2465,8 @@ if (weather.lat != null && weather.lon != null) {
 } else {
   applyGeoAndRefresh();
 }
+/* 打开页面后复查一次定位权限：还没授权就再提醒一次（带频率控制） */
+setTimeout(() => { geoNagCheck(); }, 3000);
 /* 每分钟刷新"当前时间"红线（编辑中不打断） */
 setInterval(() => {
   if (editing) return;
@@ -2480,6 +2564,8 @@ async function cloudHello(){
   try { _cloudBusy = true; await cloudPull(); cloud.status = 'on'; cloud.error = ''; }
   catch (e){ cloud.status = 'error'; cloud.error = String(e.message || e); }
   finally { _cloudBusy = false; }
+  /* 登录成功后也复查一次定位权限 */
+  setTimeout(() => { geoNagCheck(); }, 1500);
 }
 
 /* ---------------- 拉取 / 推送 ---------------- */
