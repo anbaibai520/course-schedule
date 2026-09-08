@@ -2183,13 +2183,15 @@ setInterval(() => {
    ===================================================================== */
 const CLOUD_LS = 'course-cloud-v1';
 const CLOUD_DEFAULT_URL = 'https://mfrlinxxbtovltufwprw.supabase.co';
-const cloud = { cfg: { url: CLOUD_DEFAULT_URL, key: '' }, session: null, profile: null, subs: [], status: 'off', error: '' };
+/* anon public key：按 Supabase 的设计本就公开，真正的权限由数据库 RLS 规则控制 */
+const CLOUD_DEFAULT_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1mcmxpbnh4YnRvdmx0dWZ3cHJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NjE1NTUsImV4cCI6MjEwNDQzNzU1NX0.zYva2ZbK0RovAY8ddrha5dUVYnf0zcjGBiagSAXQqIE';
+const cloud = { cfg: { url: CLOUD_DEFAULT_URL, key: CLOUD_DEFAULT_KEY }, session: null, profile: null, subs: [], status: 'off', error: '' };
 let _cloudBusy = false, _pushT = 0;
 
 function cloudLoad(){
   try {
     const o = JSON.parse(localStorage.getItem(CLOUD_LS) || '{}');
-    cloud.cfg = Object.assign({ url: CLOUD_DEFAULT_URL, key: '' }, o.cfg || {});
+    cloud.cfg = Object.assign({ url: CLOUD_DEFAULT_URL, key: CLOUD_DEFAULT_KEY }, o.cfg || {});
     cloud.session = o.session || null;
     cloud.profile = o.profile || null;
     cloud.subs = o.subs || [];
