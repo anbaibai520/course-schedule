@@ -1644,7 +1644,7 @@ const WMO = {
   99:{e:'⛈️',d:'⛈️',n:'⛈️',zh:'强雷暴伴冰雹'}
 };
 const weatherDefault = () => ({ mode:'geo', city:'', lat:null, lon:null, data:null, geoDenied:false, acc:null,
-  geoNagAt:0, geoNagCount:0, geoNagOff:false, geoRetryAt:0 });
+  geoNagAt:0, geoNagCount:0, geoNagOff:false, geoRetryAt:0, geoFail:0 });
 let weather = weatherDefault();
 /* 是否正在定位中，供权限复查避让 */
 let geoRunning = false;
@@ -1777,6 +1777,12 @@ function distM(a, b){
   const x = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(x));
 }
+/* 是否手机版 Edge（Android: EdgA/  iOS: EdgiOS/）
+   它的定位依赖 Google Play Services，国行安卓几乎必然失败 */
+function isEdgeMobile(){
+  const ua = navigator.userAgent || '';
+  return /EdgA\/|EdgiOS\//.test(ua);
+}
 /* 定位 + 更新
    ---------------------------------------------------------------------
    手机定位的真实失败模式不是"拿不到"，而是"GPS 迟迟不收敛、等超时被掐断"。
@@ -1792,6 +1798,10 @@ function applyGeoAndRefresh(){
   // 用户明确拒绝过 → 不再反复弹授权框，直接走 IP 兜底
   // 注意：这不是永久判决，每次打开页面都会复查真实权限（见 geoNagCheck）
   if (weather.geoDenied) { geoFallback('已拒绝定位授权'); return; }
+  /* 手机 Edge 在国行安卓上基本必然失败：它跟 Chrome 一样依赖 Google Play Services
+     的融合定位（WiFi/基站数据库），国行手机没有 GMS，只能干等 GPS，而室内收不到。
+     实测连败两次后就没必要每次再烧 26 秒了，直接兜底。手动点「使用我的位置」仍会重试。 */
+  if (isEdgeMobile() && (weather.geoFail || 0) >= 2) { geoFallback('手机 Edge 无法定位，已改用网络'); return; }
 
   weatherBtnLoading(true);
   weather.geoRetryAt = Date.now(); weatherSave();
@@ -1816,6 +1826,7 @@ function applyGeoAndRefresh(){
     weather.lat = c.latitude; weather.lon = c.longitude;
     weather.acc = Math.round(acc);
     weather.geoDenied = false;
+    weather.geoFail = 0;                              // 成功过就清零失败计数
     if (!settled || moved) weather.city = await revCity(c.latitude, c.longitude);
     settled = true;
     weatherSave();
@@ -1834,6 +1845,7 @@ function applyGeoAndRefresh(){
     if (settled) return;                  // 已经有结果，单路错误无所谓
     errCount++;
     if (errCount < 2) return;             // 还有一路没失败，再等等
+    weather.geoFail = (weather.geoFail || 0) + 1; weatherSave();
     const msg = code === 2 ? '系统定位服务未开启，改用网络位置' : '定位超时，改用网络位置';
     stopAll();
     await geoFallback(msg);
@@ -1847,6 +1859,7 @@ function applyGeoAndRefresh(){
   // 总闸：26 秒后无论如何停手
   setTimeout(() => {
     if (settled) { stopAll(); return; }
+    weather.geoFail = (weather.geoFail || 0) + 1; weatherSave();
     stopAll();
     geoFallback('定位超时，改用网络位置');
   }, 26000);
@@ -1915,7 +1928,9 @@ function openGeoNag(state){
   openModal('自动定位未开启',
     `<div class="wbox">
       <div class="w-tip">当前天气用的是<b>网络粗略定位（IP）</b>${weather.city ? '，显示的是 <b>' + esc(weather.city) + '</b>' : ''}，只能精确到城市，可能跟你的实际位置不一致。</div>
-      ${blocked
+      ${isEdgeMobile()
+        ? '<div class="w-tip">检测到你用的是<b>手机 Edge</b>：它和 Chrome 一样依赖 Google 定位服务，而国行安卓没有这个服务，所以拿不到 WiFi/基站位置，只能干等 GPS（室内基本收不到）。<br>建议换夸克、QQ 浏览器这类内置国内定位的浏览器，或直接手动选城市。</div>'
+        : blocked
         ? '<div class="w-tip">定位权限已被浏览器<b>永久拒绝</b>，需要你手动解除：点地址栏左侧的 <b>🔒 图标</b> → 位置 → 改为「允许」，再刷新页面。</div>'
         : '<div class="w-tip">开启后天气会自动跟着你走，精度可达几十米。</div>'}
       <button class="w-geo-btn" id="geoNagGo">${locIcon()} ${blocked ? '我已解除，重新定位' : '开启自动定位'}</button>
@@ -1927,7 +1942,7 @@ function openGeoNag(state){
   const g = $('#geoNagGo');
   if (g) g.onclick = () => {
     closeModal();
-    weather.geoDenied = false; weather.geoRetryAt = 0; weatherSave();
+    weather.geoDenied = false; weather.geoRetryAt = 0; weather.geoFail = 0; weatherSave();
     applyGeoAndRefresh();
   };
   const c = $('#geoNagCity');
@@ -2050,8 +2065,8 @@ function openCityPick(){
       el.onclick = () => pick(cands[+el.dataset.i]);
     });
   };
-  /* 清掉"拒绝过"标记，让系统授权框能再次弹出 */
-  $('#wUseGeo').onclick = () => { closeModal(); weather.geoDenied = false; weatherSave(); applyGeoAndRefresh(); };
+  /* 清掉"拒绝过"标记和失败计数，让系统授权框能再次弹出、也真的再试一次 */
+  $('#wUseGeo').onclick = () => { closeModal(); weather.geoDenied = false; weather.geoFail = 0; weatherSave(); applyGeoAndRefresh(); };
   $('#wCityOk').onclick = go;
   $('#wCityInput').onkeydown = e => { if (e.key === 'Enter') go(); };
 }
