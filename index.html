@@ -319,8 +319,10 @@ button{cursor:pointer;border:0;background:none}
 .tmc{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
 .tmc .tcol{width:100%}
 .tmc-cap{font-size:10px;color:var(--muted);text-align:center;font-weight:600;letter-spacing:.5px;line-height:12px;user-select:none}
-.tcol{position:relative;overflow-y:auto;scroll-snap-type:y mandatory;scroll-snap-stop:normal;border:1px solid var(--line);border-radius:12px;background:var(--panel);overscroll-behavior:contain;scrollbar-width:none;cursor:ns-resize;height:96px}
+.tcol{position:relative;overflow-y:auto;scroll-snap-type:y mandatory;scroll-snap-stop:normal;border:1px solid var(--line);border-radius:12px;background:var(--panel);overscroll-behavior:contain;scrollbar-width:none;cursor:ns-resize;touch-action:pan-y;height:96px}
 .tcol::-webkit-scrollbar{display:none}
+.tcol.dragging{scroll-snap-type:none;cursor:grabbing;scroll-behavior:auto}
+.tcol.dragging *{cursor:grabbing}
 /* 中间高亮胶囊：盖在当前格，选中的时间就在这条带子里 */
 .tcol .cur{position:absolute;left:5px;right:5px;top:calc(50% - 16px);height:32px;border-radius:9px;background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 22%,transparent),color-mix(in srgb,var(--accent) 8%,transparent));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 48%,transparent);pointer-events:none;z-index:1}
 /* 顶/底固定渐变罩：选项滚入罩下渐隐，营造“收进容器”的纵深感 */
@@ -1082,23 +1084,32 @@ function pickColor(){
 /* 上下滑动的时间选择列：把分钟整数值渲染成一列竖向可滚选项，返回 html 片段。
    网格以当前值对齐（base = value % step），保证不破坏既有课的整点分钟值。 */
 function timeSteps(){
+  // 时间选择器范围跟随设置的「时间范围」：dayStart~dayEnd，减少选项、贴近实际课程时段
   const step = Math.max(1, Math.round(state.settings.snap || 5));
-  const cap = 1440;                 // 24h 上限（分钟）
-  return { step, cap };
+  const S = state.settings;
+  const lo = clamp(+S.dayStart || 7, 0, 23) * 60;
+  const hi = clamp(+S.dayEnd || 24, (+S.dayStart || 7) + 1, 24) * 60;   // 上限 24:00
+  return { step, lo, hi };
 }
 function tmCol(v, role, capLabel){
-  v = Math.max(0, Math.min(1439, Math.round(+v || 0)));
-  const { step, cap } = timeSteps();
-  const base = ((v % step) + step) % step;       // 让当前值一定落在格点上
-  const idx = Math.round((v - base) / step);
+  const { step, lo, hi } = timeSteps();
+  // 生成 lo(含) ~ hi(含) 的格点列表，起点以 lo 对齐步长，终点保证 >= hi 至少含一项
   const times = [];
-  for (let t = base; t < cap; t += step) times.push(t);
+  for (let t = lo; t <= hi; t += step) times.push(t);
+  if (!times.length || times[times.length - 1] < hi) times.push(hi);
+  // 当前值 v 吸附到最近的格点（原值多在范围内；偶有越界则贴近边界）
+  let idx = 0, bd = Infinity;
+  times.forEach((t, i) => {
+    const d = Math.abs(t - Math.round(+v || lo));
+    if (d < bd) { bd = d; idx = i; }
+  });
   const items = times.map((t, i) =>
     `<div class="opt${i === idx ? ' on' : ''}" data-min="${t}" data-i="${i}">${fmt(t)}</div>`).join('');
+  const cur = times[idx];
   return `<span class="tmc">
       <span class="tmc-cap">${capLabel}</span>
       <span class="tcol s${role === 'start' ? 'start' : 'end'}" data-role="${role}"
-          data-min="${v}" data-idx="${idx}">
+          data-min="${cur}" data-idx="${idx}">
         <div class="cur"></div>
         <div class="opts">${items}</div>
       </span></span>`;
@@ -1135,7 +1146,7 @@ function renderEditor(){
             <input class="loc" placeholder="地点（选填）" value="${esc(s.location)}">
           </div>`).join('')}
       </div>
-      <div class="tm-hint">上下滑动把时间滚进中间带即可选中；点某条时间可快速跳过去。</div>
+      <div class="tm-hint">拖动/滚轮把时间滚进中间带即可选中（拖到范围外可快速连续滚动）；点某条时间可跳过去。</div>
       <button class="addlink" id="fAddSession">＋ 添加时间段</button>
     </div>`;
 
@@ -1189,11 +1200,40 @@ function renderEditor(){
     _tick = requestAnimationFrame(() => mark(col, idxFromScroll(col)));
   }, true);                                          // capture：scroll 不冒泡
   // 点某一项 → 跳到中间并选中
+  let _suppressClick = false;                          // 拖动松开后抑制本次点击
   $('#fSessions').addEventListener('click', e => {
+    if (_suppressClick) { _suppressClick = false; return; }
     const o = e.target.closest('.opt'); if (!o) return;
     const col = o.closest('.tcol'); if (!col) return;
     centerTo(col, +o.dataset.i || 0);
   });
+  // PC 鼠标按住上下拖拽 → 驱动容器滚动（scroll-snap 在拖动时关闭，避免被“吸”住）
+  $('#fSessions').addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;  // 触摸走原生滚动，不接管
+    const col = e.target.closest('.tcol'); if (!col) return;
+    const opts = col.querySelectorAll('.opt'); if (!opts.length) return;
+    e.preventDefault();                               // 避免拖出选区/触发 text selection
+    const y0 = e.clientY, st = col.scrollTop;
+    let dragging = false;
+    col.classList.add('dragging');                    // 临时关 scroll-snap
+    const move = ev => {
+      const dy = ev.clientY - y0;
+      if (!dragging) {
+        if (Math.abs(dy) < 4) return;                 // 未过阈值视为点击
+        dragging = true; _suppressClick = true;
+      }
+      col.scrollTop = st - dy;                        // 跟手：往下拖→内容向下
+    };
+    const up = () => {
+      col.classList.remove('dragging');
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  }, true);                                           // capture：.opt/.cur 等都在内部
 
   $('#fColors').onclick = e => {
     const sw = e.target.closest('.sw'); if (!sw) return;
