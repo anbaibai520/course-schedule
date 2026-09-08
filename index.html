@@ -24,7 +24,8 @@ html[data-theme="dark"]{
   --weekend:#161920; --now:#ff5a5a;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;padding:0;height:100%}
+html,body{margin:0;padding:0;height:100%;overflow-x:hidden}
+input,select,textarea{font-size:16px}   /* 防止 iOS 聚焦时自动缩放页面 */
 body{
   background:var(--bg); color:var(--text); font-family:var(--font);
   font-size:14px; line-height:1.5; overscroll-behavior:none;
@@ -379,25 +380,72 @@ button{cursor:pointer;border:0;background:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 
 @media(max-width:860px){
-  .topbar{padding:9px 11px;gap:7px}
+  /* 触摸目标加大（Apple HIG 最低 44） */
+  .btn{padding:10px 14px;min-height:40px;font-size:13.5px}
+  .btn.icon{width:40px;height:40px;padding:0;min-height:40px}
+  .chip{padding:7px 13px;min-height:36px}
+  .seg button{padding:8px 14px;min-height:36px}
+  .switch{width:48px;height:28px}
+  .switch::after{width:22px;height:22px}
+  .switch[aria-pressed="true"]::after{left:24px}
+  /* 顶部 */
+  .topbar{padding:9px 11px;gap:8px}
   .logo{font-size:15.5px}
   .btn .t{display:none}
-  .btn{padding:8px 10px}
-  .btn.icon{width:36px}
-  .toolbar{top:52px;padding:8px 11px;gap:8px}
+  /* 工具条 */
+  .toolbar{top:54px;padding:8px 11px;gap:8px;row-gap:8px}
   .meta{display:none}
-  .chips{flex:1}
-  .scroll{padding:10px 10px 90px}
-  :root{--gutter:46px}
-  .fab{display:flex}
+  .chips{flex:1;gap:5px;min-height:36px}
+  /* 滚动区与底部安全区（iPhone 刘海 / home bar） */
+  .scroll{padding:10px 10px calc(96px + env(safe-area-inset-bottom))}
+  /* FAB 应用安全区 */
+  .fab{display:flex;right:calc(16px + env(safe-area-inset-right));bottom:calc(22px + env(safe-area-inset-bottom));width:52px;height:52px;font-size:24px}
+  /* 弹窗在小屏占满可用空间 */
+  .modal{padding:10px}
+  .modal-card{max-width:none;max-height:93vh;border-radius:14px}
+  .modal-card > header{padding:14px 16px;font-size:14.5px}
+  .modal-body{padding:14px 16px;overflow-x:hidden}
+  .modal-foot{padding:12px 16px calc(12px + env(safe-area-inset-bottom));flex-wrap:wrap}
+  .modal-foot .btn{min-height:40px}
+  /* 课表网格 */
+  :root{--gutter:40px}
 }
 @media(max-width:520px){
+  .topbar{padding:8px 10px;gap:6px;flex-wrap:wrap;row-gap:6px;padding-bottom:8px}
+  .logo{font-size:14.5px}
+  .weather{padding:6px 9px;gap:5px;max-width:140px}
+  .weather .wdeg{font-size:13px}
+  .weather .wcity{max-width:48px;font-size:11.5px}
+  .btn{padding:11px 14px;min-height:44px;font-size:14px}
+  .btn.icon{width:44px;height:44px;min-height:44px}
+  .chip{padding:8px 12px;min-height:38px;font-size:13px}
+  /* 强制换行点：让 topbar 内 seg 独占下一行 */
+  .wbr{flex-basis:100%;height:0}
+  /* 视图分段控件在小屏：三按钮自然宽，文字不换行 */
+  .seg{padding:3px;flex-shrink:0}
+  .seg button{padding:8px 12px;min-height:38px;white-space:nowrap;font-size:12.5px;flex:0 0 auto}
+  .toolbar{top:84px;padding:7px 10px;gap:7px;row-gap:8px}
+  .toolbar > .chips{min-width:0;flex:1}
+  .scroll{padding:8px 8px calc(88px + env(safe-area-inset-bottom))}
+  .fab{width:50px;height:50px;right:calc(14px + env(safe-area-inset-right));bottom:calc(18px + env(safe-area-inset-bottom));font-size:22px}
+  .setrow .lb{font-size:13px}
+  .setrow .lb small{font-size:11px}
   .srow-hd .sday{font-size:14px}
-  .tcol{height:78px}
+  .tcol{height:80px}
   .tcol .opt{height:26px;line-height:26px}
   .tcol .opts{padding:13px 0}
   .tcol .cur{top:calc(50% - 13px);height:26px}
   .shead{display:none}
+  .blk .bn{font-size:12.5px}
+  .blk .bt{font-size:10px}
+  .blk .bm{font-size:11px}
+  .chips{min-height:38px;gap:4px}
+  :root{--gutter:36px}
+  /* 让课程块在小屏更紧凑可读 */
+  .blk{padding:3px 6px;border-radius:8px}
+  /* 列表视图头不挤 */
+  .dhead{padding:9px 12px;gap:8px}
+  .dname{font-size:13.5px}
 }
 /* ============ 课表（人员）切换面板 ============ */
 .plist{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
@@ -433,6 +481,7 @@ button{cursor:pointer;border:0;background:none}
       <span class="wrefresh">⟳</span>
     </button>
     <div class="spacer" data-page-node-id="9oc4rVgIUK8cABepB3Rzvg"></div>
+    <div class="wbr" data-page-node-id="wbr01"></div>
     <div class="seg" id="viewSeg" data-page-node-id="OJyp8RdNGxnouCLKkvfkPv">
       <button data-view="week" aria-pressed="true" data-page-node-id="s9heeIsYBhSoFzrbZ8yZBw">周视图</button>
       <button data-view="day" aria-pressed="false" data-page-node-id="kPUENmVQnEgK91WgIdSoo7">日视图</button>
