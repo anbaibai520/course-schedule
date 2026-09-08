@@ -400,12 +400,12 @@ button{cursor:pointer;border:0;background:none}
   .scroll{padding:10px 10px calc(96px + env(safe-area-inset-bottom))}
   /* FAB 应用安全区 */
   .fab{display:flex;right:calc(16px + env(safe-area-inset-right));bottom:calc(22px + env(safe-area-inset-bottom));width:52px;height:52px;font-size:24px}
-  /* 弹窗在小屏占满可用空间 */
-  .modal{padding:10px}
-  .modal-card{max-width:none;max-height:93vh;border-radius:14px}
+  /* 弹窗：不铺满屏幕，四周留白、高度留余量，露出背景更像浮层 */
+  .modal{padding:20px 16px calc(20px + env(safe-area-inset-bottom))}
+  .modal-card{max-width:440px;max-height:74vh;border-radius:18px;box-shadow:0 24px 70px rgba(0,0,0,.45)}
   .modal-card > header{padding:14px 16px;font-size:14.5px}
   .modal-body{padding:14px 16px;overflow-x:hidden}
-  .modal-foot{padding:12px 16px calc(12px + env(safe-area-inset-bottom));flex-wrap:wrap}
+  .modal-foot{padding:12px 16px;flex-wrap:wrap}
   .modal-foot .btn{min-height:40px}
   /* 课表网格 */
   :root{--gutter:40px}
@@ -446,6 +446,9 @@ button{cursor:pointer;border:0;background:none}
   /* 列表视图头不挤 */
   .dhead{padding:9px 12px;gap:8px}
   .dname{font-size:13.5px}
+  /* 弹窗：更窄的屏同样不铺满，留白略收但仍露出背景 */
+  .modal{padding:16px 12px calc(16px + env(safe-area-inset-bottom))}
+  .modal-card{max-height:72vh;border-radius:16px}
 }
 /* ============ 课表（人员）切换面板 ============ */
 .plist{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
