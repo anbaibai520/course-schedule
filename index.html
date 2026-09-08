@@ -77,6 +77,20 @@ button{cursor:pointer;border:0;background:none}
 .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 .meta{font-size:12.5px;color:var(--muted);margin-left:auto;white-space:nowrap}
 
+/* ============ 周次条：显示当前周 + 可预览其它周 ============ */
+.weekbar{display:none;align-items:center;gap:2px;font-size:12.5px;color:var(--text);white-space:nowrap;
+  padding:2px 3px;border:1px solid var(--line);border-radius:9px;background:var(--panel2)}
+.weekbar.on{display:inline-flex}
+.weekbar .wb{background:none;border:0;cursor:pointer;font-size:13px;color:var(--muted);padding:2px 6px;border-radius:6px;line-height:1}
+.weekbar .wb:hover{background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--text)}
+.weekbar .wbl{display:inline-flex;align-items:baseline;gap:4px;padding:0 4px;min-width:0}
+.weekbar .wbl b{font-variant-numeric:tabular-nums;font-size:13px}
+.weekbar .wbl em{font-style:normal;font-size:11px;color:var(--muted)}
+.weekbar .wbh{background:var(--accent);color:#fff;border:0;cursor:pointer;font-size:11px;padding:2px 7px;border-radius:999px;font-weight:600}
+.weekbar .wbh:hover{opacity:.9}
+.weekbar .wb-off{display:flex;align-items:center;gap:6px;padding:2px 6px;font-size:12px;color:var(--muted)}
+.weekbar .wbset{background:none;border:0;color:var(--accent);cursor:pointer;font-size:11px;text-decoration:underline dotted;padding:0 2px}
+
 /* ============ 天气胶囊 ============ */
 .weather{
   display:inline-flex;align-items:center;gap:8px;padding:6px 11px;border-radius:11px;
@@ -316,6 +330,15 @@ button{cursor:pointer;border:0;background:none}
 .srow-tm .to{color:var(--muted);font-weight:700;flex:none;height:96px;display:flex;align-items:center;font-size:15px}
 .srow .loc{margin-top:7px;width:100%;box-sizing:border-box;padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:var(--panel);outline:none;min-width:0;font-size:13px}
 .srow .loc:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent)}
+/* 周次录入行 */
+.srow-wk{display:flex;align-items:center;gap:7px;margin-top:7px;font-size:12.5px;flex-wrap:wrap}
+.srow-wk .wk-lbl{color:var(--muted);font-weight:600;flex:none}
+.srow-wk select{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:5px 6px;font-size:12.5px;outline:none;max-width:118px}
+.srow-wk .spgrp{display:inline-flex;align-items:center;gap:5px;color:var(--muted);flex-wrap:wrap}
+.srow-wk .spgrp.off{display:none}
+.srow-wk .spgrp input{width:52px;padding:5px 6px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);outline:none;font-size:12.5px;text-align:center;color:var(--text)}
+.srow-wk .spgrp input:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent)}
+.srow-wk .spgrp select{max-width:80px}
 .tmc{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
 .tmc .tcol{width:100%}
 .tmc-cap{font-size:10px;color:var(--muted);text-align:center;font-weight:600;letter-spacing:.5px;line-height:12px;user-select:none}
@@ -518,6 +541,7 @@ button{cursor:pointer;border:0;background:none}
 
   <div class="toolbar" data-page-node-id="fkpD1qC3r30BFVaYY5JUKl">
     <div class="chips" id="dayChips" data-page-node-id="GmE2VaAVtDeGgPQN1syKvk"></div>
+    <div class="weekbar" id="weekBar" title="按周查看：显示该周实际要上的课。‹ › 预览其它周，点「本周」回到当前周"></div>
     <div class="meta" id="meta" data-page-node-id="HjdYoQLbApRMuHirw7imX9"></div>
     <button class="btn" id="btnExportImg" data-page-node-id="VgVnnxj6Rc4eqE7fz7RXa9">🖼️<span class="t" data-page-node-id="FVno6NEqnMFWmb5E8N6hG0">导出图片</span></button>
     <button class="btn" id="btnPrint" data-page-node-id="OTkihgrGh1izSYggL1loOc">🖨️<span class="t" data-page-node-id="EKc4q0DFg3Aft8qgUfHZcE">打印</span></button>
@@ -578,27 +602,33 @@ button{cursor:pointer;border:0;background:none}
    数据模型（schema v2，全部为纯 JSON，可自由扩展字段）：
    {
      version: 2,
-     settings: {
-       theme:'auto|light|dark', accent:'#4f7cff',
-       dayStart:7, dayEnd:22,      // 画布时间范围（小时）
-       hourHeight:56,              // 每小时像素高度
-       snap:5,                     // 时间选择器最小间隔（分钟）
-       showWeekend:true, firstDay:1, view:'week|day|list'
-     },
-     people: [{                    // 多人课表：每人一份
-       id, name,                   // name 例如「我的课表」「室友小李」
-       courses: [{
-         id, name, teacher, note, color,
-         sessions: [{ id, day:1..7, start:分钟, end:分钟, location, weeks:null }]
-       }]
-     }],
-     activeId: '当前查看的课表 id'
-   }
-   state.courses 是「当前课表」的快捷访问器（不可枚举，不会落盘），
-   上层逻辑照旧读写它即可，切换课表后自动指向新的那一份。
-   旧版 v1（顶层 courses）读取时会自动迁移为名为「我的课表」的一份。
-   session.weeks 预留用于单双周/按周次过滤（null = 每周都上），
-   目前 UI 未开放，写入后会自动生效，方便后续扩展。
+    settings: {
+      theme:'auto|light|dark', accent:'#4f7cff',
+      dayStart:7, dayEnd:22,      // 画布时间范围（小时）
+      hourHeight:56,              // 每小时像素高度
+      snap:5,                     // 时间选择器最小间隔（分钟）
+      showWeekend:true, firstDay:1, view:'week|day|list',
+      totalWeeks:20,              // 学期总周数（1..30，默认 20）
+      termStart:'YYYY-MM-DD',     // 开学那一周的周一日期（决定"今天是第几周"）
+      weekFilter:true             // 是否按周过滤显示（关掉则无视 weeks，全部展示）
+    },
+    people: [{                    // 多人课表：每人一份
+      id, name,                   // name 例如「我的课表」「室友小李」
+      courses: [{
+        id, name, teacher, note, color,
+        sessions: [{ id, day:1..7, start:分钟, end:分钟, location, weeks:null }]
+      }]
+    }],
+    activeId: '当前查看的课表 id'
+  }
+  state.courses 是「当前课表」的快捷访问器（不可枚举，不会落盘），
+  上层逻辑照旧读写它即可，切换课表后自动指向新的那一份。
+  旧版 v1（顶层 courses）读取时会自动迁移为名为「我的课表」的一份。
+  session.weeks 表示该时间段在哪些周上课：
+    null         → 每周都上（默认）
+    {f,t,p}      → 第 f 周 ～ 第 t 周（含两端），p 为周期：0 每周 / 1 单周(135..) / 2 双周(246..)
+  termStart 决定"当前是第几周"：week = floor((今天 - 开学周周一)/7) + 1。
+  关闭 settings.weekFilter 可整体忽略 weeks 照旧每周显示。
 
    对外扩展接口：window.CourseSchedule（见文件末尾）
    ===================================================================== */
@@ -626,6 +656,57 @@ const todayDow = () => { const d = new Date().getDay(); return d === 0 ? 7 : d; 
 const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const snapTo = m => { const s = state.settings.snap || 5; return Math.round(m / s) * s; };
 
+/* ------------------------- 学期 / 周次 ------------------------- */
+/* 把一个 Date 格式化为 YYYY-MM-DD（本地时区） */
+const isoDay = d => {
+  const y = d.getFullYear(), m = d.getMonth() + 1, dd = d.getDate();
+  return y + '-' + String(m).padStart(2, '0') + '-' + String(dd).padStart(2, '0');
+};
+/* 给定日期（Date 或 'YYYY-MM-DD'）所在那周的周一 */
+function mondayOf(d){
+  const t = d instanceof Date ? new Date(d) : new Date(String(d) + 'T00:00:00');
+  if (isNaN(t)) return null;
+  const dow = t.getDay();                       // 0=周日
+  const back = dow === 0 ? 6 : dow - 1;         // 距周一的天数
+  t.setDate(t.getDate() - back);
+  return t;
+}
+const parseDay = d => { const t = new Date(String(d) + 'T00:00:00'); return isNaN(t) ? null : t; };
+/* 当前学期开始周默认 = 本周周一（让"今天是第 1 周"起步，可在设置里改） */
+const defaultTermStart = () => isoDay(mondayOf(new Date()));
+/* 给定开学周一 + 今天，算今天是第几周（1 起）；早于开学返回 null(未开始) */
+function weekOfToday(termStart){
+  const m = parseDay(termStart); if (!m) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.floor((today - m) / 86400000);          // 距开学周周一的天数
+  if (diff < 0) return null;                                 // 还没开学
+  return Math.floor(diff / 7) + 1;
+}
+/* 规范化 session.weeks → null 或 {f,t,p}（含周期 0每/1单/2双） */
+function normWeeks(w, total){
+  const T = Math.max(1, +total || 20);
+  if (w == null) return null;
+  const f = Math.round(+w.f || w.from || 1);
+  const t = Math.round(+w.t || w.to || f);
+  const p = [0, 1, 2].includes(+w.p) ? +w.p : 0;
+  return { f: clamp(f, 1, T), t: clamp(Math.max(f, t), 1, T), p };
+}
+/* 这个时间段是否在第 wk 周上课 */
+function weeksHas(w, wk){
+  if (!w) return true;                                        // null = 每周
+  if (wk == null) return true;
+  if (wk < w.f || wk > w.t) return false;
+  if (w.p === 1 && (wk - w.f) % 2 !== 0) return false;        // 单周
+  if (w.p === 2 && (wk - w.f) % 2 === 0) return false;        // 双周
+  return true;
+}
+/* 人类可读标签，如：每周都上 / 第1周 / 第1-8周 · 单周 */
+function weeksLabel(w){
+  if (!w) return '每周';
+  const p = w.p === 1 ? ' · 单周' : w.p === 2 ? ' · 双周' : '';
+  return w.f === w.t ? `第${w.f}周${p}` : `第${w.f}-${w.t}周${p}`;
+}
+
 /* ------------------------- 事件总线（扩展点） ------------------------- */
 const _ev = {};
 function on(name, fn){ (_ev[name] = _ev[name] || []).push(fn); return () => _ev[name] = _ev[name].filter(f => f !== fn); }
@@ -637,7 +718,8 @@ function defaults(){
   return {
     version: 2,
     settings: { theme:'auto', accent:'#4f7cff', dayStart:7, dayEnd:22, hourHeight:56,
-                snap:5, showWeekend:true, firstDay:1, view:'week' },
+                snap:5, showWeekend:true, firstDay:1, view:'week',
+                totalWeeks:20, termStart: defaultTermStart(), weekFilter:true },
     people: [p],
     activeId: p.id
   };
@@ -701,6 +783,10 @@ function normalize(o){
   s.dayEnd   = clamp(+s.dayEnd   || 22, s.dayStart + 1, 24);
   s.hourHeight = clamp(+s.hourHeight || 56, 30, 160);
   s.snap = [1, 5, 10, 15, 30].includes(+s.snap) ? +s.snap : 5;
+  s.totalWeeks = clamp(+s.totalWeeks || 20, 1, 30);
+  s.termStart = /^\d{4}-\d{2}-\d{2}$/.test(String(s.termStart || '')) ? String(s.termStart)
+                : (parseDay(s.termStart) ? isoDay(parseDay(s.termStart)) : d.settings.termStart);
+  s.weekFilter = s.weekFilter !== false;
   /* 单份课表的课程清洗 + 排序（供各处复用） */
   const normCourses = list => (Array.isArray(list) ? list : []).map(c => ({
     id: c.id || uid(),
@@ -714,7 +800,7 @@ function normalize(o){
       start: clamp(+x.start || 480, 0, 1440),
       end: clamp(+x.end || 565, 0, 1440),
       location: String(x.location || ''),
-      weeks: x.weeks || null
+      weeks: normWeeks(x.weeks, s.totalWeeks)
     })).filter(x => x.end > x.start))
   }));
 
@@ -743,7 +829,42 @@ function save(){
 }
 
 /* ------------------------- UI 状态 ------------------------- */
-const ui = { view: 'week', day: todayDow() };
+const ui = { view: 'week', day: todayDow(), viewWeek: null };   // viewWeek: null=跟随真实周，否则手动预览第几周
+
+/* 当前真实是第几周（依据设置 termStart）；未开学返回 null */
+function realWeek(){
+  const S = state.settings;
+  if (!S.weekFilter || !S.termStart) return null;
+  const w = weekOfToday(S.termStart);
+  if (w == null) return null;
+  return clamp(w, 1, S.totalWeeks);
+}
+/* 实际用于过滤的周：weekFilter 关闭→null(全部)；否则手动预览或真实周 */
+function viewWeek(){
+  const S = state.settings;
+  if (!S.weekFilter) return null;
+  return ui.viewWeek != null ? clamp(ui.viewWeek, 1, S.totalWeeks) : realWeek();
+}
+/* 某份课表（可能来自云端同学）对应的"今天第几周" */
+function personWeek(p){
+  const S = state.settings;
+  const ts = (p && p.termStart) || S.termStart;
+  const tot = (p && p.totalWeeks) || S.totalWeeks;
+  const wf  = p && p.weekFilter != null ? p.weekFilter : S.weekFilter;
+  if (!wf || !ts) return null;
+  const w = weekOfToday(ts); if (w == null) return null;
+  return clamp(w, 1, tot);
+}
+/* 对比/汇总里：某人(可能含云端)的某时间段是否属于"其本周该上"的课 */
+function personShown(p, s){
+  const wk = personWeek(p);
+  return wk == null || weeksHas(s.weeks, wk);
+}
+/* 该时间段是否应在"当前（手动或真实）周"显示 */
+function sessionShown(s){
+  const wk = viewWeek();
+  return wk == null || weeksHas(s.weeks, wk);
+}
 
 function visibleDays(){
   const fd = clamp(+state.settings.firstDay || 1, 1, 7);
@@ -760,10 +881,12 @@ function listDays(){
   return arr;
 }
 /* 按星期归拢时间段，组内按开始时间排序 */
-function sessionsByDay(days){
+function sessionsByDay(days, includeAll){
   const map = new Map(days.map(d => [d, []]));
   state.courses.forEach(c => c.sessions.forEach(s => {
-    if (map.has(s.day)) map.get(s.day).push({ course: c, s });
+    if (!map.has(s.day)) return;
+    if (!includeAll && !sessionShown(s)) return;   // 按当前周过滤
+    map.get(s.day).push({ course: c, s });
   }));
   map.forEach(a => a.sort((x, y) => x.s.start - y.s.start || x.s.end - y.s.end));
   return map;
@@ -795,6 +918,7 @@ function render(){
   $('#viewSeg').querySelectorAll('button').forEach(b =>
     b.setAttribute('aria-pressed', String(b.dataset.view === ui.view)));
   renderChips();
+  renderWeek();
   renderPerson();
   if (ui.view === 'list') renderList(); else renderBoard();
   renderMeta();
@@ -819,6 +943,30 @@ function renderChips(){
   }
 }
 
+/* 周次条：只在开启按周过滤时显示；展示当前/预览周，可切换周 */
+function renderWeek(){
+  const bar = $('#weekBar'); if (!bar) return;
+  const S = state.settings;
+  const rw = realWeek();                 // 真实本周（可能 null=未开学/关闭）
+  const wk = viewWeek();                 // 实际过滤周（null=全部）
+  if (!S.weekFilter || !S.termStart){     // 关闭或未配置 → 提供入口引导
+    bar.classList.toggle('on', !S.weekFilter || !S.termStart);
+    bar.innerHTML = S.weekFilter
+      ? `<span class="wb-off">按周查看<span class="wbset" data-w="set">设置开学周</span></span>`
+      : `<span class="wb-off">按周查看已关闭<span class="wbset" data-w="set">设置</span></span>`;
+    return;
+  }
+  bar.classList.add('on');
+  const total = S.totalWeeks;
+  const previewing = ui.viewWeek != null;
+  const label = previewing ? '预览' : '本周';
+  bar.innerHTML =
+    `<button class="wb" data-w="dec" title="上一周">‹</button>` +
+    `<span class="wbl">${label}<b>${wk != null ? wk : '?'}</b><em>/ ${total} 周</em></span>` +
+    `<button class="wb" data-w="inc" title="下一周">›</button>` +
+    (previewing ? `<button class="wbh" data-w="today" title="回到当前周">本周</button>` : '');
+}
+
 function renderMeta(){
   const n = state.courses.length;
   const t = state.courses.reduce((a, c) => a + c.sessions.length, 0);
@@ -831,6 +979,7 @@ function layout(days){
   const items = [];
   state.courses.forEach(c => c.sessions.forEach(s => {
     if (!days.includes(s.day)) return;
+    if (!sessionShown(s)) return;                  // 按当前周过滤
     items.push({ course: c, s, day: s.day, start: s.start, end: s.end });
   }));
   const byDay = new Map(days.map(d => [d, []]));
@@ -909,8 +1058,17 @@ function renderBoard(){
   }
 
   // 即使没有课程也要渲染网格，否则无法"点击空白格新建课程"
-  const hint = state.courses.length ? '' :
+  let hint = state.courses.length ? '' :
     `<div class="emptyhint">还没有课程<br><span>点击任意时间格，即可在该时间新建一节课</span></div>`;
+  // 有课但本周都不上（其它周上）→ 明确提示，避免误以为没课了
+  const wk = viewWeek();
+  let hasAny = 0;
+  if (wk != null) sessionsByDay(currentDays(), true).forEach(a => hasAny += a.length);
+  if (!hint && wk != null && !items.length && hasAny > 0) {
+    hint = `<div class="emptyhint" style="background:transparent;box-shadow:none">
+      本周（第 <b>${wk}</b> 周）没有要上的课<br>
+      <span>这些课程在其它周有安排，切到对应周即可查看</span></div>`;
+  }
 
   board.innerHTML = head +
     `<div class="board-body">
@@ -972,7 +1130,7 @@ async function onListClick(e){
   const add = e.target.closest('.dadd');
   if (add) {
     const day = +add.dataset.day;
-    const arr = sessionsByDay(listDays()).get(day);
+    const arr = sessionsByDay(listDays(), true).get(day);
     const hi = state.settings.dayEnd * 60;
     const start = arr.length ? clamp(arr[arr.length - 1].s.end, state.settings.dayStart * 60, hi - 30) : 480;
     openEditor(null, { day, start, end: Math.min(start + 90, hi) });
@@ -1117,6 +1275,7 @@ function tmCol(v, role, capLabel){
 
 function renderEditor(){
   const c = editing.course;
+  const W_TOTAL = clamp(+state.settings.totalWeeks || 20, 1, 30);   // 学期总周数，周次输入上限
   const dayOpts = [1,2,3,4,5,6,7].map(d => `<option value="${d}">${DAY_NAMES[d]}</option>`).join('');
   const body = `
     <div class="field"><label>课程名称</label>
@@ -1142,6 +1301,22 @@ function renderEditor(){
               ${tmCol(s.start, 'start', '开始')}
               <span class="to">→</span>
               ${tmCol(s.end, 'end', '结束')}
+            </div>
+            <div class="srow-wk">
+              <span class="wk-lbl">周次</span>
+              <select class="spmode">
+                <option value="all" ${!s.weeks ? 'selected' : ''}>每周都上</option>
+                <option value="spec" ${s.weeks ? 'selected' : ''}>指定周次</option>
+              </select>
+              <span class="spgrp${s.weeks ? '' : ' off'}">
+                第<input class="frm" type="number" min="1" max="${W_TOTAL}" value="${s.weeks ? s.weeks.f : 1}">
+                ～ 第<input class="fto" type="number" min="1" max="${W_TOTAL}" value="${s.weeks ? s.weeks.t : W_TOTAL}">周
+                <select class="spar" title="周期（同范围内取单/双周）">
+                  <option value="0" ${!s.weeks || s.weeks.p === 0 ? 'selected' : ''}>每周</option>
+                  <option value="1" ${s.weeks && s.weeks.p === 1 ? 'selected' : ''}>单周</option>
+                  <option value="2" ${s.weeks && s.weeks.p === 2 ? 'selected' : ''}>双周</option>
+                </select>
+              </span>
             </div>
             <input class="loc" placeholder="地点（选填）" value="${esc(s.location)}">
           </div>`).join('')}
@@ -1260,6 +1435,12 @@ function renderEditor(){
       c.sessions.push({ id: uid(), day: todayDow(), start: 480, end: 570, location: '', weeks: null });
     renderEditor();
   };
+  // 「每周都上 / 指定周次」切换 → 显隐周次区间输入，无需整页重绘
+  $('#fSessions').addEventListener('change', e => {
+    const m = e.target.closest('.spmode'); if (!m) return;
+    const grp = m.closest('.srow').querySelector('.spgrp');
+    if (grp) grp.classList.toggle('off', m.value !== 'spec');
+  });
   $('#fSave').onclick = saveEditor;
   const del = $('#fDelete');
   if (del) del.onclick = async () => {
@@ -1290,9 +1471,19 @@ function syncFromForm(){
     let e = rd('.send') ?? 570;
     if (e < s) { const t = s; s = e; e = t; }
     if (e - s < 5) e = s + 45;
-    const old = c.sessions.find(x => x.id === row.dataset.sid);
+    const tot = clamp(+state.settings.totalWeeks || 20, 1, 30);
+    // 周次：spmode=all → null（每周都上）；spmode=spec → 读第 f～t 周 + 周期
+    let weeks = null;
+    const spmode = row.querySelector('.spmode');
+    if (spmode && spmode.value === 'spec') {
+      const f = clamp(+row.querySelector('.frm').value || 1, 1, tot);
+      let t = clamp(+row.querySelector('.fto').value || tot, 1, tot);
+      if (t < f) t = f;
+      const p = +row.querySelector('.spar').value || 0;
+      weeks = (f === 1 && t === tot && p === 0) ? null : { f, t, p };
+    }
     return { id: row.dataset.sid, day: +row.querySelector('.sday').value, start: s, end: e,
-             location: row.querySelector('.loc').value.trim(), weeks: old ? old.weeks : null };
+             location: row.querySelector('.loc').value.trim(), weeks };
   }));
 }
 
@@ -1341,6 +1532,22 @@ function openSettings(){
       </select>
     </div>
     <div class="setrow">
+      <div class="lb">按周上课<small>只显示当前周实际要上的课（关掉则每周都显示）</small></div>
+      <button class="switch" id="sWeekFilter" aria-pressed="${!!S.weekFilter}"></button>
+    </div>
+    <div class="setrow">
+      <div class="lb">学期总周数<small>如 1 学期 20 周</small></div>
+      <input type="number" id="sTotalWeeks" min="1" max="30" value="${S.totalWeeks}">
+    </div>
+    <div class="setrow">
+      <div class="lb">开学日<small>开学那一周的日期，据此推算今天是第几周</small></div>
+      <input type="date" id="sTermStart" value="${S.termStart || ''}">
+    </div>
+    <div class="setrow">
+      <div class="lb">当前进度<small id="sTermInfo"></small></div>
+      <span style="color:var(--text);font-weight:600" id="sNowWeek">—</span>
+    </div>
+    <div class="setrow">
       <div class="lb">时间范围<small>课表显示的起止小时</small></div>
       <div style="display:flex;gap:6px;align-items:center">
         <input type="number" id="sStart" min="0" max="20" value="${S.dayStart}"><span style="color:var(--muted)">时 —</span>
@@ -1382,7 +1589,22 @@ function openSettings(){
     S.dayEnd = clamp(+$('#sEnd').value || 22, S.dayStart + 1, 24);
     S.hourHeight = +$('#sH').value;
     S.snap = +$('#sSnap').value;
+    S.weekFilter = $('#sWeekFilter').getAttribute('aria-pressed') === 'true';
+    S.totalWeeks = clamp(+$('#sTotalWeeks').value || 20, 1, 30);
+    S.termStart = $('#sTermStart').value || '';
     save(); render();
+    updateNowWeek();
+  };
+  const updateNowWeek = () => {
+    const el = $('#sNowWeek'); if (!el) return;
+    const ts = $('#sTermStart').value || S.termStart;
+    const tot = clamp(+$('#sTotalWeeks').value || 20, 1, 30);
+    const info = $('#sTermInfo');
+    if (info) info.textContent = S.weekFilter ? '' : '按周已关闭';
+    if (!ts) { el.textContent = '请先设开学日'; return; }
+    const w = weekOfToday(ts);
+    if (w == null) { el.textContent = `未开学（开学 ${ts} 为第 1 周）`; return; }
+    el.textContent = w > tot ? `第 ${w} 周（已超学期 ${tot} 周）` : `第 ${w} / ${tot} 周`;
   };
   const cb = $('#sCloud'); if (cb) cb.onclick = openCloud;
   $('#sTheme').onchange = commit;
@@ -1397,6 +1619,16 @@ function openSettings(){
     b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
     commit();
   };
+  $('#sWeekFilter').onclick = () => {
+    const b = $('#sWeekFilter');
+    b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
+    commit();
+  };
+  $('#sTotalWeeks').onchange = commit;
+  $('#sTermStart').onchange = commit;
+  $('#sTermStart').oninput = updateNowWeek;
+  $('#sTotalWeeks').oninput = updateNowWeek;
+  updateNowWeek();
   $('#sPerson').onclick = () => { closeModal(); openPersonManager(); };
   $('#sClear').onclick = async () => {
     const r = await askModal('清空课程',
@@ -2183,7 +2415,7 @@ function buildMatrixUI(ps, selIds){
     ps.map((p, i) => {
       const c = compareColor(p, i);
       const on = selSet.has(p.id);
-      const n = p.courses.reduce((a, x) => a + x.sessions.length, 0);
+      const n = p.courses.reduce((a, x) => a + x.sessions.filter(s => personShown(p, s)).length, 0);
       return `<span class="cch ${on ? 'on' : 'off'}" data-pid="${p.id}" style="--acc:${c}" title="${esc(p.name)} · ${n} 节课">
         <span class="sw" style="background:${c}"></span>${esc(p.name)}<span class="cnt">${n}节</span></span>`;
     }).join('');
@@ -2191,7 +2423,7 @@ function buildMatrixUI(ps, selIds){
   const mins = ps.map((p, i) => {
     const c = compareColor(p, i);
     let busy = 0, sec = 0;
-    p.courses.forEach(x => x.sessions.forEach(s => { if (s.end > s.start){ busy += s.end - s.start; sec++; } }));
+    p.courses.forEach(x => x.sessions.forEach(s => { if (personShown(p, s) && s.end > s.start){ busy += s.end - s.start; sec++; } }));
     return { p, c, busy, sec };
   }).filter(m => selSet.has(m.p.id));
   const maxBusy = Math.max(1, ...mins.map(m => m.busy));
@@ -2224,7 +2456,7 @@ function renderMatrix(){
     const a = h, b = h + 60;
     const out = [];
     p.courses.forEach(x => x.sessions.forEach(s => {
-      if (s.day === cmpDay && s.end > s.start && s.start < b && s.end > a) out.push({ course: x, s });
+      if (s.day === cmpDay && s.end > s.start && s.start < b && s.end > a && personShown(p, s)) out.push({ course: x, s });
     }));
     return out;
   };
@@ -2320,7 +2552,7 @@ function renderCompareGrid(){
     ps.map((p, i) => {
       const c = compareColor(p, i);
       const on = sel.has(p.id);
-      const n = p.courses.reduce((a, x) => a + x.sessions.length, 0);
+      const n = p.courses.reduce((a, x) => a + x.sessions.filter(s => personShown(p, s)).length, 0);
       return `<span class="cch ${on ? 'on' : 'off'}" data-pid="${p.id}" style="--acc:${c}" title="${esc(p.name)} · ${n} 节课">
         <span class="sw" style="background:${c}"></span>${esc(p.name)}<span class="cnt">${n}节</span></span>`;
     }).join('');
@@ -2329,7 +2561,7 @@ function renderCompareGrid(){
   const minutes = ps.map((p, i) => {
     const c = compareColor(p, i);
     let busy = 0, sec = 0;
-    p.courses.forEach(x => x.sessions.forEach(s => { if (s.end > s.start){ busy += s.end - s.start; sec++; } }));
+    p.courses.forEach(x => x.sessions.forEach(s => { if (personShown(p, s) && s.end > s.start){ busy += s.end - s.start; sec++; } }));
     return { p, i, c, busy, sec };
   }).filter(m => sel.has(m.p.id));
   const maxBusy = Math.max(1, ...minutes.map(m => m.busy));
@@ -2371,6 +2603,7 @@ function renderCompareGrid(){
     // 汇总选中人在这一天的所有时间段（含所属人）
     const items = [];
     minutes.forEach(m => m.p.courses.forEach(x => x.sessions.forEach(s => {
+      if (!personShown(m.p, s)) return;             // 此人本周不上这节
       // 容错：day 可能是字符串/数字混存；start/end 裁剪到 dayStart..dayEnd 范围
       const sd = +s.day;
       if (sd !== d) return;
@@ -2489,6 +2722,18 @@ $('#viewSeg').onclick = e => {
 $('#dayChips').onclick = e => {
   const b = e.target.closest('.chip'); if (!b) return;
   ui.day = +b.dataset.day; render();
+};
+/* 周次条：‹ › 预览相邻周，"本周"回到真实周，"设置"打开学期配置 */
+$('#weekBar').onclick = e => {
+  const b = e.target.closest('[data-w]'); if (!b) return;
+  const S = state.settings;
+  const cur = viewWeek() != null ? viewWeek() : realWeek() != null ? realWeek() : 1;
+  switch (b.dataset.w) {
+    case 'dec': ui.viewWeek = clamp(cur - 1, 1, S.totalWeeks); render(); break;
+    case 'inc': ui.viewWeek = clamp(cur + 1, 1, S.totalWeeks); render(); break;
+    case 'today': ui.viewWeek = null; render(); break;
+    case 'set': openSettings(); break;
+  }
 };
 $('#btnAdd').onclick = () => openEditor(null);
 $('#fab').onclick = () => openEditor(null);
@@ -2770,7 +3015,12 @@ async function cloudSyncSubs(){
     if (!p){ p = { id: pid, name: '', courses: [] }; state.people.push(p); }
     p.name = prof.nickname || '同学';
     p.cloud = { uid: s.user_id, code: prof.share_code };
-    p.courses = normalize({ courses: courses }).courses;
+    /* 把对方开学/周次设置快照带上，让"同学课表"也能按其自己的学期算今天是第几周 */
+    const os = (s.data.settings || {});
+    p.termStart = os.termStart || null;
+    p.totalWeeks = clamp(+os.totalWeeks || 20, 1, 30);
+    p.weekFilter = os.weekFilter !== false;
+    p.courses = normalize({ courses, settings: { totalWeeks: p.totalWeeks || 20 } }).courses;
   });
   const keep = new Set(ids.map(i => 'c_' + i));
   state.people = state.people.filter(p => !p.cloud || keep.has(p.id));
