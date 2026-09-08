@@ -2366,6 +2366,7 @@ async function cloudUnsubscribe(targetId){
   await cloudSyncSubs();
 }
 function cloudSignOut(){
+  cloudGateDone();   /* 主动退出过就不再弹引导了 */
   cloudSignOutLocal();
   state.people = state.people.filter(p => !p.cloud);
   if (!state.people.some(p => p.id === state.activeId)) state.activeId = state.people[0].id;
@@ -2478,6 +2479,29 @@ function renderCloud(){
   $('#clCfg').onclick = () => { cloud.cfg.key = ''; cloudPersist(); renderCloud(); };
 }
 
+/* ---------------- 首次引导（可跳过，只弹一次） ---------------- */
+const CLOUD_GATE_KEY = 'course-cloud-gate-v1';
+function cloudGateDone(){ try { localStorage.setItem(CLOUD_GATE_KEY, '1'); } catch (e) {} }
+function cloudGatePending(){ try { return !localStorage.getItem(CLOUD_GATE_KEY); } catch (e) { return false; } }
+function openCloudGate(){
+  openModal('开启云同步', `
+    <div style="font-size:13.5px;line-height:1.7">
+      注册一个账号后，课表会自动在多台设备之间同步，同学输入你的分享码就能看到彼此的空闲时间。
+    </div>
+    <div class="hint" style="margin-top:10px">
+      · 手机上改课表，电脑打开自动就是新的<br>
+      · 不用再导出 JSON 传来传去<br>
+      · 注册只要邮箱和密码，十几秒搞定
+    </div>
+    <div class="hint" style="margin-top:10px">
+      不注册也能用，课表会存在这台设备的浏览器里。之后随时可以在「设置 → 云同步」里开启。
+    </div>`,
+    `<button class="btn" id="gateSkip">先随便看看</button><button class="btn primary" id="gateGo">注册 / 登录</button>`);
+  const sk = $('#gateSkip'), go = $('#gateGo');
+  if (sk) sk.onclick = () => { cloudGateDone(); closeModal(); };
+  if (go) go.onclick = () => { cloudGateDone(); openCloud(); };
+}
+
 /* 本地任何改动都顺手同步一次；事件总线天然去重 */
 on('change', cloudSchedulePush);
 
@@ -2525,6 +2549,7 @@ window.CourseSchedule = {
 /* 启动时：若上次已登录，静默拉一次云端。失败就当没这回事，本地照常用 */
 cloudLoad();
 if (cloudOn()) cloudHello().catch(() => {});
+else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，可跳过 */
 </script>
 </body>
 </html>
