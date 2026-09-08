@@ -1643,7 +1643,7 @@ const WMO = {
   95:{e:'⛈️',d:'⛈️',n:'⛈️',zh:'雷阵雨'}, 96:{e:'⛈️',d:'⛈️',n:'⛈️',zh:'雷雨伴冰雹'},
   99:{e:'⛈️',d:'⛈️',n:'⛈️',zh:'强雷暴伴冰雹'}
 };
-const weatherDefault = () => ({ mode:'geo', city:'', lat:null, lon:null, data:null });
+const weatherDefault = () => ({ mode:'geo', city:'', lat:null, lon:null, data:null, geoDenied:false });
 let weather = weatherDefault();
 function weatherLoad(){
   try { const raw = localStorage.getItem(WKEY); if (raw) weather = Object.assign(weatherDefault(), JSON.parse(raw)); }
@@ -1741,22 +1741,57 @@ async function fetchWeather(lat, lon){
     at: new Date().getTime()
   };
 }
+/* IP 兜底定位：浏览器定位不可用/被拒/超时时的退路。
+   用 geojs.io（免 key、无配额、国内实测可达）+ 已有的 revCity 反查中文城市名。
+   精度只有城市级，且运营商出口可能在外省，所以会明确提示用户可手动改。 */
+async function locateByIP(){
+  const r = await fetch('https://get.geojs.io/v1/ip/geo.json');
+  const j = await r.json();
+  const lat = parseFloat(j.latitude), lon = parseFloat(j.longitude);
+  if (!isFinite(lat) || !isFinite(lon)) throw new Error('no-ip-geo');
+  return { lat, lon, city: await revCity(lat, lon) };
+}
+/* 定位失败后的统一兜底：先试 IP 粗略定位，再不行才让用户手输 */
+async function geoFallback(msg){
+  try {
+    const p = await locateByIP();
+    weather.mode = 'ip';
+    weather.lat = p.lat; weather.lon = p.lon; weather.city = p.city;
+    weatherSave(); await refreshWeather();
+    if (weather.data) { toast(msg ? msg + '：' + p.city : '已按网络位置定位：' + p.city); return true; }
+    throw new Error('no-weather');
+  } catch (e) {
+    weatherBtnLoading(false);
+    toast(msg ? msg + '，且网络定位也失败，请手动输入城市' : '未能自动定位，请手动输入城市');
+    openCityPick();
+    return false;
+  }
+}
 /* 定位 + 更新 */
 function applyGeoAndRefresh(){
-  if (!('geolocation' in navigator)) { weather.mode = 'manual'; weatherSave(); openWeather(); return; }
+  // 非安全上下文（http:// 或 file:// 打开）时浏览器直接禁用 Geolocation
+  if (!('geolocation' in navigator)) { geoFallback('此浏览器不支持定位'); return; }
+  if (!window.isSecureContext) { geoFallback('非 HTTPS 环境无法定位'); return; }
+  // 用户明确拒绝过 → 不再反复弹授权框，直接走 IP 兜底
+  if (weather.geoDenied) { geoFallback('已拒绝定位授权'); return; }
   weatherBtnLoading(true);
   navigator.geolocation.getCurrentPosition(async pos => {
     weather.mode = 'geo';
     weather.lat = pos.coords.latitude; weather.lon = pos.coords.longitude;
     weather.city = await revCity(weather.lat, weather.lon);   // 中文城市，失败回落坐标
+    weather.geoDenied = false;
     weatherSave();
     await refreshWeather();
   }, async err => {
-    weather.mode = 'manual'; weatherSave();   // 拒绝/失败 → 切手动
-    toast('未能自动定位，请手动输入城市');
-    weatherBtnLoading(false);
-    openWeather();
-  }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 });
+    // 1=用户拒绝授权  2=位置不可用（系统定位开关没开）  3=超时
+    const code = err && err.code;
+    weather.geoDenied = (code === 1);      // 只有"拒绝"才记住，超时/不可用下次仍可重试
+    weatherSave();
+    const msg = code === 1 ? '已拒绝定位授权，改用网络位置'
+              : code === 2 ? '系统定位服务未开启，改用网络位置'
+              : '定位超时，改用网络位置';
+    await geoFallback(msg);
+  }, { enableHighAccuracy: false, timeout: 20000, maximumAge: 600000 });
 }
 /* 用给定城市刷新（手动） */
 async function useCity(q){
@@ -1823,7 +1858,7 @@ function openWeather(){
           <div class="c"><div class="k">降水量</div><div class="v">${d.precip} mm</div></div>
           <div class="c"><div class="k">体感</div><div class="v">${d.feels}°</div></div>
         </div>
-        <div class="w-tip">数据来自 Open-Meteo 气象模型，仅供参考。</div>
+        <div class="w-tip">数据来自 Open-Meteo 气象模型，仅供参考。${weather.mode === 'ip' ? '<br>当前为<b>网络粗略定位（IP）</b>，可能与实际位置有偏差，可点「切换城市」修正。' : ''}</div>
       </div>`,
       `<button class="btn" id="wRef">⟳ 刷新</button>
        <button class="btn" id="wSwitch">✏️ 切换城市</button>
@@ -1870,7 +1905,8 @@ function openCityPick(){
       el.onclick = () => pick(cands[+el.dataset.i]);
     });
   };
-  $('#wUseGeo').onclick = () => { closeModal(); applyGeoAndRefresh(); };
+  /* 清掉"拒绝过"标记，让系统授权框能再次弹出 */
+  $('#wUseGeo').onclick = () => { closeModal(); weather.geoDenied = false; weatherSave(); applyGeoAndRefresh(); };
   $('#wCityOk').onclick = go;
   $('#wCityInput').onkeydown = e => { if (e.key === 'Enter') go(); };
 }
