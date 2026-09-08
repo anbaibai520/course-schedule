@@ -1202,6 +1202,10 @@ function openSettings(){
   const S = state.settings;
   const body = `
     <div class="setrow">
+      <div class="lb">云同步<small>多设备同步 · 让同学看到你的空闲时间</small></div>
+      <button class="btn" id="sCloud">${esc(cloudStatusText())}</button>
+    </div>
+    <div class="setrow">
       <div class="lb">外观<small>深色模式会自动跟随系统</small></div>
       <select id="sTheme">
         <option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option>
@@ -1267,6 +1271,7 @@ function openSettings(){
     S.snap = +$('#sSnap').value;
     save(); render();
   };
+  const cb = $('#sCloud'); if (cb) cb.onclick = openCloud;
   $('#sTheme').onchange = commit;
   $('#sAccent').oninput = commit;
   $('#sFirst').onchange = commit;
@@ -2170,6 +2175,311 @@ setInterval(() => {
 }, 60000);
 
 /* =====================================================================
+   云同步（Supabase REST 直连 —— 不引入任何 SDK）
+   三条底线：
+   1) 未登录时页面行为与原来完全一致（纯本地 localStorage）
+   2) 云端不可用时静默降级，绝不打断本地使用
+   3) 订阅来的课表是只读副本，不上传、不污染自己的课表
+   ===================================================================== */
+const CLOUD_LS = 'course-cloud-v1';
+const CLOUD_DEFAULT_URL = 'https://mfrlinxxbtovltufwprw.supabase.co';
+const cloud = { cfg: { url: CLOUD_DEFAULT_URL, key: '' }, session: null, profile: null, subs: [], status: 'off', error: '' };
+let _cloudBusy = false, _pushT = 0;
+
+function cloudLoad(){
+  try {
+    const o = JSON.parse(localStorage.getItem(CLOUD_LS) || '{}');
+    cloud.cfg = Object.assign({ url: CLOUD_DEFAULT_URL, key: '' }, o.cfg || {});
+    cloud.session = o.session || null;
+    cloud.profile = o.profile || null;
+    cloud.subs = o.subs || [];
+  } catch (e) {}
+}
+function cloudPersist(){
+  try { localStorage.setItem(CLOUD_LS, JSON.stringify({ cfg: cloud.cfg, session: cloud.session, profile: cloud.profile, subs: cloud.subs })); }
+  catch (e) {}
+}
+const cloudUid = () => (cloud.session && cloud.session.user && cloud.session.user.id) || null;
+const cloudOn  = () => !!cloudUid();
+
+async function cFetch(path, opts){
+  opts = opts || {};
+  const h = { apikey: cloud.cfg.key, 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (cloud.session && cloud.session.access_token) h.Authorization = 'Bearer ' + cloud.session.access_token;
+  Object.assign(h, opts.headers || {});
+  const r = await fetch(String(cloud.cfg.url || '').replace(/\/+$/, '') + path,
+    { method: opts.method || 'GET', headers: h, body: opts.body });
+  if (!r.ok){
+    let msg = 'HTTP ' + r.status;
+    try { const j = await r.json(); msg = j.message || j.msg || j.error_description || j.error || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  const t = await r.text();
+  return t ? JSON.parse(t) : null;
+}
+/* 带自动刷新 token 的请求；彻底失败则本地登出 */
+async function cAuto(path, opts){
+  try { return await cFetch(path, opts); }
+  catch (e){
+    if (cloud.session && cloud.session.refresh_token && /401|expired|JWT/i.test(String(e.message))){
+      try {
+        const j = await cFetch('/auth/v1/token?grant_type=refresh_token',
+          { method: 'POST', body: JSON.stringify({ refresh_token: cloud.session.refresh_token }) });
+        cloud.session = j; cloudPersist();
+        return await cFetch(path, opts);
+      } catch (e2){ cloudSignOutLocal(); }
+    }
+    throw e;
+  }
+}
+function cloudSignOutLocal(){
+  cloud.session = null; cloud.profile = null; cloud.subs = []; cloud.status = 'off'; cloudPersist();
+}
+
+/* ---------------- 账号 ---------------- */
+async function cloudSignIn(email, password){
+  const j = await cFetch('/auth/v1/token?grant_type=password',
+    { method: 'POST', body: JSON.stringify({ email, password }) });
+  cloud.session = j; cloud.status = 'on'; cloud.error = ''; cloudPersist();
+  await cloudHello();
+}
+async function cloudSignUp(email, password){
+  const j = await cFetch('/auth/v1/signup', { method: 'POST', body: JSON.stringify({ email, password }) });
+  if (j && j.access_token){
+    cloud.session = j; cloud.status = 'on'; cloudPersist();
+    await cloudHello(); return 'ok';
+  }
+  return 'confirm';   /* 项目开了邮箱验证，需要去收邮件 */
+}
+async function cloudHello(){
+  const uid = cloudUid();
+  try {
+    const r = await cAuto('/rest/v1/profiles?id=eq.' + uid + '&select=id,nickname,share_code');
+    cloud.profile = (r && r[0]) || null;
+  } catch (e){ cloud.profile = null; }
+  cloudPersist();
+  try { _cloudBusy = true; await cloudPull(); cloud.status = 'on'; cloud.error = ''; }
+  catch (e){ cloud.status = 'error'; cloud.error = String(e.message || e); }
+  finally { _cloudBusy = false; }
+}
+
+/* ---------------- 拉取 / 推送 ---------------- */
+function applyCloudData(data){
+  if (!data) return;
+  try { localStorage.setItem('course-schedule-localbackup-' + Date.now(), JSON.stringify({ ...state, courses: state.courses })); } catch (e) {}
+  const n = normalize({ settings: data.settings || {}, people: data.people || [], activeId: data.activeId });
+  state.settings = n.settings;
+  state.people   = n.people;
+  state.activeId = n.activeId;
+  save(); render();
+}
+async function cloudPull(){
+  const uid = cloudUid(); if (!uid) return;
+  const rows = await cAuto('/rest/v1/schedules?user_id=eq.' + uid + '&select=user_id,data,updated_at');
+  const row = rows && rows[0];
+  if (row && row.data && Array.isArray(row.data.people) && row.data.people.length){
+    _cloudBusy = true;
+    applyCloudData(row.data);
+    _cloudBusy = false;
+  } else {
+    await cloudPush();   /* 云端还是空的 → 把本地这份传上去 */
+  }
+  await cloudSyncSubs();
+}
+async function cloudPush(){
+  const uid = cloudUid(); if (!uid) return;
+  const payload = {
+    user_id: uid,
+    data: {
+      version: 2,
+      settings: state.settings,
+      people: state.people.filter(p => !p.cloud).map(p => ({ id: p.id, name: p.name, courses: p.courses })),
+      activeId: state.activeId
+    },
+    updated_at: new Date().toISOString()
+  };
+  await cAuto('/rest/v1/schedules?on_conflict=user_id', {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(payload)
+  });
+  cloud.status = 'on'; cloud.error = '';
+}
+/* 本地有改动 → 1.5 秒后推一次（合并短时间内的连续修改） */
+function cloudSchedulePush(){
+  if (!cloudOn() || _cloudBusy) return;
+  clearTimeout(_pushT);
+  _pushT = setTimeout(() => { cloudPush().catch(e => { cloud.status = 'error'; cloud.error = String(e.message || e); }); }, 1500);
+}
+
+/* ---------------- 订阅（看同学的课表） ---------------- */
+async function cloudSyncSubs(){
+  const uid = cloudUid(); if (!uid) return;
+  const subs = await cAuto('/rest/v1/subscriptions?subscriber_id=eq.' + uid + '&select=target_id');
+  const ids = (subs || []).map(s => s.target_id).filter(Boolean);
+  cloud.subs = ids;
+  let profs = [], scheds = [];
+  if (ids.length){
+    const inq = 'in.(' + ids.join(',') + ')';
+    profs  = await cAuto('/rest/v1/profiles?id=' + inq + '&select=id,nickname,share_code');
+    scheds = await cAuto('/rest/v1/schedules?user_id=' + inq + '&select=user_id,data,updated_at');
+  }
+  const pmap = {}; (profs || []).forEach(p => pmap[p.id] = p);
+  (scheds || []).forEach(s => {
+    const prof = pmap[s.user_id]; if (!prof || !s.data) return;
+    const src = (s.data.people || []).filter(p => !p.cloud);
+    const courses = src.length ? (src[0].courses || []) : [];
+    const pid = 'c_' + s.user_id;
+    let p = state.people.find(x => x.id === pid);
+    if (!p){ p = { id: pid, name: '', courses: [] }; state.people.push(p); }
+    p.name = prof.nickname || '同学';
+    p.cloud = { uid: s.user_id, code: prof.share_code };
+    p.courses = normalize({ courses: courses }).courses;
+  });
+  const keep = new Set(ids.map(i => 'c_' + i));
+  state.people = state.people.filter(p => !p.cloud || keep.has(p.id));
+  if (!state.people.some(p => p.id === state.activeId)) state.activeId = state.people[0].id;
+  _cloudBusy = true; save(); render(); _cloudBusy = false;
+  cloudPersist();
+}
+async function cloudSubscribe(code){
+  const uid = cloudUid(); if (!uid) throw new Error('请先登录');
+  code = String(code || '').trim().toUpperCase();
+  if (!code) throw new Error('请输入分享码');
+  const rows = await cAuto('/rest/v1/profiles?share_code=eq.' + code + '&select=id,nickname,share_code');
+  if (!rows || !rows.length) throw new Error('没找到这个分享码，请检查是否输错');
+  const t = rows[0];
+  if (t.id === uid) throw new Error('这是你自己的分享码');
+  await cAuto('/rest/v1/subscriptions?on_conflict=subscriber_id,target_id', {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ subscriber_id: uid, target_id: t.id })
+  });
+  await cloudSyncSubs();
+  return t;
+}
+async function cloudUnsubscribe(targetId){
+  const uid = cloudUid(); if (!uid) return;
+  await cAuto('/rest/v1/subscriptions?subscriber_id=eq.' + uid + '&target_id=eq.' + targetId, { method: 'DELETE' });
+  await cloudSyncSubs();
+}
+function cloudSignOut(){
+  cloudSignOutLocal();
+  state.people = state.people.filter(p => !p.cloud);
+  if (!state.people.some(p => p.id === state.activeId)) state.activeId = state.people[0].id;
+  save(); render();
+}
+
+/* ---------------- 云同步面板 ---------------- */
+function openCloud(){
+  openModal('云同步', '<div id="cloudBox"></div>', '<div class="spacer"></div><button class="btn primary" data-close>关闭</button>');
+  renderCloud();
+}
+function cloudStatusText(){
+  if (!cloud.cfg.key) return '未配置';
+  if (!cloudOn()) return '未登录';
+  if (cloud.status === 'error') return '同步失败（本地仍可用）';
+  return '已同步';
+}
+function renderCloud(){
+  const box = $('#cloudBox'); if (!box) return;
+  const CFG = `
+    <div class="hint" style="margin-bottom:8px">第一次使用需要填入 Supabase 的 <b>anon public key</b>（项目设置 → API Keys）。它本来就是公开的，权限由数据库规则控制。</div>
+    <input id="cfUrl" placeholder="Project URL" value="${esc(cloud.cfg.url)}" style="width:100%;box-sizing:border-box;margin-bottom:6px">
+    <input id="cfKey" placeholder="anon public key（eyJhbGci...）" value="${esc(cloud.cfg.key)}" style="width:100%;box-sizing:border-box">
+    <button class="btn primary" id="cfSave" style="margin-top:8px;width:100%">保存并继续</button>`;
+  const LOGIN = `
+    <div class="hint" style="margin-bottom:8px">登录后课表会自动在多台设备间同步，同学输入你的分享码就能看到你的空闲时间。</div>
+    <input id="clEmail" type="email" placeholder="邮箱" autocomplete="email" style="width:100%;box-sizing:border-box;margin-bottom:6px">
+    <input id="clPass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password" style="width:100%;box-sizing:border-box">
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn primary" id="clIn" style="flex:1">登录</button>
+      <button class="btn" id="clUp" style="flex:1">注册</button>
+    </div>
+    <div id="clMsg" class="hint" style="margin-top:10px"></div>`;
+  const code = (cloud.profile && cloud.profile.share_code) || '——';
+  const subsHtml = state.people.filter(p => p.cloud).map(p => `
+    <div class="setrow" style="align-items:center">
+      <div class="lb">${esc(p.name)}<small>${esc(p.cloud.code || '')} · ${p.courses.length} 门课</small></div>
+      <button class="btn danger" data-unsub="${esc(p.cloud.uid)}">退订</button>
+    </div>`).join('') || '<div class="hint">还没有订阅任何人。把同学的分享码填到下面，就能在「多人对比」里看到他。</div>';
+  const HOME = `
+    <div style="text-align:center;padding:12px 0 8px">
+      <div class="hint" style="margin-bottom:4px">我的分享码</div>
+      <div id="myCode" style="font-size:26px;font-weight:600;letter-spacing:4px;font-family:var(--font-mono,monospace);color:var(--accent)">${esc(code)}</div>
+      <button class="btn" id="copyCode" style="margin-top:8px">复制分享码</button>
+    </div>
+    <div class="hint" style="margin:10px 0">已登录：${esc((cloud.session && cloud.session.user && cloud.session.user.email) || '')} · ${esc(cloudStatusText())}</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="btn" id="pullNow" style="flex:1">从云端拉取</button>
+      <button class="btn" id="pushNow" style="flex:1">上传到云端</button>
+    </div>
+    <div class="hint" style="margin-bottom:6px">我订阅的同学</div>
+    ${subsHtml}
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <input id="subCode" placeholder="输入同学分享码" maxlength="6" style="flex:1;min-width:0;text-transform:uppercase">
+      <button class="btn primary" id="subAdd">订阅</button>
+    </div>
+    <div id="clMsg" class="hint" style="margin-top:10px"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn danger" id="clOut" style="flex:1">退出登录</button>
+      <button class="btn" id="clCfg" style="flex:1">修改配置</button>
+    </div>`;
+  box.innerHTML = !cloud.cfg.key ? CFG : (cloudOn() ? HOME : LOGIN);
+  const msg = $('#clMsg');
+  const say = (t, bad) => { if (msg) { msg.textContent = t; msg.style.color = bad ? 'var(--danger,#e5484d)' : ''; } };
+
+  if (!cloud.cfg.key){
+    $('#cfSave').onclick = () => {
+      cloud.cfg.url = ($('#cfUrl').value || '').trim().replace(/\/+$/, '');
+      cloud.cfg.key = ($('#cfKey').value || '').trim();
+      if (!cloud.cfg.key) return;
+      cloudPersist(); renderCloud();
+    };
+    return;
+  }
+  if (!cloudOn()){
+    const go = async (mode) => {
+      const email = ($('#clEmail').value || '').trim();
+      const pass = $('#clPass').value || '';
+      if (!email || pass.length < 6) return say('请填写邮箱，密码至少 6 位', true);
+      say('处理中…');
+      try {
+        if (mode === 'up'){
+          const r = await cloudSignUp(email, pass);
+          if (r === 'confirm'){ say('注册成功，请先到邮箱点确认链接再登录', true); return; }
+        } else await cloudSignIn(email, pass);
+        renderCloud();
+      } catch (e){ say('失败：' + (e.message || e), true); }
+    };
+    $('#clIn').onclick = () => go('in');
+    $('#clUp').onclick = () => go('up');
+    return;
+  }
+  $('#copyCode').onclick = () => {
+    const c = (cloud.profile && cloud.profile.share_code) || '';
+    if (navigator.clipboard) navigator.clipboard.writeText(c).then(() => say('已复制：' + c), () => say('分享码：' + c));
+    else say('分享码：' + c);
+  };
+  $('#pullNow').onclick = async () => { say('拉取中…'); try { _cloudBusy = true; await cloudHello(); say('已用云端数据覆盖本机'); renderCloud(); } catch (e){ say('拉取失败：' + (e.message || e), true); } finally { _cloudBusy = false; } };
+  $('#pushNow').onclick = async () => { say('上传中…'); try { await cloudPush(); say('已上传本机课表'); } catch (e){ say('上传失败：' + (e.message || e), true); } };
+  $('#subAdd').onclick = async () => {
+    const v = $('#subCode').value || '';
+    say('处理中…');
+    try { const t = await cloudSubscribe(v); say('已订阅 ' + (t.nickname || '同学')); renderCloud(); render(); }
+    catch (e){ say(e.message || String(e), true); }
+  };
+  box.querySelectorAll('[data-unsub]').forEach(b => b.onclick = async () => {
+    try { await cloudUnsubscribe(b.dataset.unsub); renderCloud(); render(); } catch (e){ say(e.message || String(e), true); }
+  });
+  $('#clOut').onclick = () => { cloudSignOut(); renderCloud(); };
+  $('#clCfg').onclick = () => { cloud.cfg.key = ''; cloudPersist(); renderCloud(); };
+}
+
+/* 本地任何改动都顺手同步一次；事件总线天然去重 */
+on('change', cloudSchedulePush);
+
+/* =====================================================================
    对外扩展接口 —— 可在控制台或未来插件中调用
    window.CourseSchedule.getData() / .setCourses() / .addCourse() /
    .on('change', fn) / .exportJSON() / .exportPNG() / .render() / .PALETTE
@@ -2199,8 +2509,20 @@ window.CourseSchedule = {
     useCity, openWeather
   },
   PALETTE, DAY_NAMES,
+  /* 云同步（Supabase）：未配置/未登录时以下方法均无副作用 */
+  cloud: {
+    open: openCloud, pull: cloudPull, push: cloudPush,
+    subscribe: cloudSubscribe, unsubscribe: cloudUnsubscribe,
+    signOut: cloudSignOut, status: cloudStatusText,
+    get profile(){ return cloud.profile; },
+    get on(){ return cloudOn(); }
+  },
   get VERSION(){ return 2; }
 };
+
+/* 启动时：若上次已登录，静默拉一次云端。失败就当没这回事，本地照常用 */
+cloudLoad();
+if (cloudOn()) cloudHello().catch(() => {});
 </script>
 </body>
 </html>
