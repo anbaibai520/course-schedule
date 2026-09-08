@@ -4,6 +4,12 @@
 <meta charset="UTF-8" data-page-node-id="t5OAxNYxpHVUzD9hJ1AL14">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" data-page-node-id="ZomC0GeyuZ9xXnfiVWXxHY">
 <meta name="theme-color" content="#4f7cff" data-page-node-id="vGMpBa5GOWPU20y4ZaY5M9">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="课程表">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <title>我的课程表</title>
 <style>
 /* ============ 主题变量（可通过设置面板 / API 修改） ============ */
@@ -3297,6 +3303,15 @@ window.CourseSchedule = {
 cloudLoad();
 if (cloudOn()) cloudHello().catch(() => {});
 else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，可跳过 */
+</script>
+
+<!-- 注册 Service Worker：使 PWA 可离线使用、可安装到主屏/桌面 -->
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function () {});
+  });
+}
 </script>
 </body>
 </html>
