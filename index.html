@@ -44,12 +44,17 @@ button{cursor:pointer;border:0;background:none}
 
 .app{display:flex;flex-direction:column;height:100%;max-width:1400px;margin:0 auto;background:var(--bg)}
 
-/* ============ 顶部栏 ============ */
+/* ============ 顶部栏（视图带 A · 单行横滑） ============ */
 .topbar{
-  display:flex;align-items:center;gap:10px;padding:10px 14px;
+  display:flex;align-items:center;gap:8px;padding:6px 10px;
   background:var(--panel);border-bottom:1px solid var(--line);
   position:sticky;top:0;z-index:30;
+  flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;overscroll-behavior-x:contain;
+  scroll-snap-type:x proximity;
+  -webkit-overflow-scrolling:touch;
 }
+.topbar::-webkit-scrollbar{display:none}
+.topbar > *{flex:0 0 auto}
 .logo{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:700;letter-spacing:.3px;white-space:nowrap}
 .logo .dot{width:11px;height:11px;border-radius:4px;background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 20%,transparent)}
 .spacer{flex:1}
@@ -69,19 +74,39 @@ button{cursor:pointer;border:0;background:none}
 .seg button{padding:6px 14px;border-radius:8px;font-size:13px;color:var(--muted);font-weight:600}
 .seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
 
-/* ============ 工具条 ============ */
+/* ============ 工具条（功能带 B · 单行横滑） ============ */
 .toolbar{
-  display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 14px;
-  background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:57px;z-index:25;
+  display:flex;align-items:center;gap:8px;flex-wrap:nowrap;padding:6px 10px;
+  background:var(--panel);border-bottom:1px solid var(--line);
+  position:sticky;top:var(--topbar-h,50px);z-index:25;
+  overflow-x:auto;scrollbar-width:none;overscroll-behavior-x:contain;
+  scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;
 }
-.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:1px}
+.toolbar::-webkit-scrollbar{display:none}
+.toolbar > *{flex:0 0 auto}
+.chips{display:flex;gap:6px;flex-wrap:nowrap;padding-bottom:1px}
 .chips::-webkit-scrollbar{display:none}
 .chip{
   padding:6px 13px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);
   font-size:13px;color:var(--muted);white-space:nowrap;transition:.15s;
 }
 .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-.meta{font-size:12.5px;color:var(--muted);margin-left:auto;white-space:nowrap}
+/* meta 右端吸住：横滑时让统计常驻右侧 */
+.meta{font-size:12.5px;color:var(--muted);margin-left:auto;white-space:nowrap;
+  position:sticky;right:0;background:var(--panel);padding-left:10px;
+  background:linear-gradient(to right,transparent,var(--panel) 8px)}
+
+/* ============ 周数后 ⋯ 更多菜单 ============ */
+.more-wrap{position:relative;flex:0 0 auto}
+/* 使用 position:fixed 避免被父级 overflow-x:auto 裁掉；位置由 JS 同步按钮 getBoundingClientRect */
+.more-pop{
+  position:fixed;
+  display:flex;gap:4px;padding:5px;
+  background:var(--panel);border:1px solid var(--line);border-radius:11px;
+  box-shadow:var(--shadow);z-index:60;
+}
+.more-pop[hidden]{display:none}
+#btnMore[aria-expanded="true"]{background:var(--panel2);color:var(--accent)}
 
 /* ============ 周次条：显示当前周 + 可预览其它周 ============ */
 .weekbar{display:none;align-items:center;gap:2px;font-size:12.5px;color:var(--text);white-space:nowrap;
@@ -430,21 +455,21 @@ button{cursor:pointer;border:0;background:none}
 
 @media(max-width:860px){
   /* 触摸目标加大（Apple HIG 最低 44） */
-  .btn{padding:10px 14px;min-height:40px;font-size:13.5px}
-  .btn.icon{width:40px;height:40px;padding:0;min-height:40px}
-  .chip{padding:7px 13px;min-height:36px}
-  .seg button{padding:8px 14px;min-height:36px}
+  .btn{padding:9px 12px;min-height:38px;font-size:13.5px}
+  .btn.icon{width:38px;height:38px;padding:0;min-height:38px}
+  .chip{padding:6px 11px;min-height:34px;font-size:12.5px}
+  .seg button{padding:6px 12px;min-height:34px;font-size:12.5px}
   .switch{width:48px;height:28px}
   .switch::after{width:22px;height:22px}
   .switch[aria-pressed="true"]::after{left:24px}
-  /* 顶部 */
-  .topbar{padding:9px 11px;gap:8px}
-  .logo{font-size:15.5px}
+  /* 两条工具带 · 紧凑 + 横滑 */
+  .topbar{padding:5px 9px;gap:6px}
+  .toolbar{padding:5px 9px;gap:6px}
+  .logo{font-size:15px}
   .btn .t{display:none}
-  /* 工具条 */
-  .toolbar{top:54px;padding:8px 11px;gap:8px;row-gap:8px}
-  .meta{display:none}
-  .chips{flex:1;gap:5px;min-height:36px}
+  /* 统计 meta 在小屏不强制 sticky，避免与 ⋯ 重叠；仍保留 */
+  .meta{font-size:11.5px}
+  .chips{gap:5px}
   /* 滚动区与底部安全区（iPhone 刘海 / home bar） */
   .scroll{padding:10px 10px calc(96px + env(safe-area-inset-bottom))}
   /* FAB 应用安全区 */
@@ -460,26 +485,22 @@ button{cursor:pointer;border:0;background:none}
   :root{--gutter:40px}
 }
 @media(max-width:520px){
-  .topbar{padding:8px 10px;gap:6px;flex-wrap:wrap;row-gap:6px;padding-bottom:8px}
-  .logo{font-size:14.5px}
-  .weather{padding:6px 9px;gap:5px;max-width:140px}
-  .weather .wdeg{font-size:13px}
-  .weather .wcity{max-width:48px;font-size:11.5px}
-  .btn{padding:11px 14px;min-height:44px;font-size:14px}
-  .btn.icon{width:44px;height:44px;min-height:44px}
-  .chip{padding:8px 12px;min-height:38px;font-size:13px}
-  /* 强制换行点：让 topbar 内 seg 独占下一行 */
-  .wbr{flex-basis:100%;height:0}
-  /* 视图分段控件在小屏：三按钮自然宽，文字不换行 */
-  .seg{padding:3px;flex-shrink:0}
-  .seg button{padding:8px 12px;min-height:38px;white-space:nowrap;font-size:12.5px;flex:0 0 auto}
-  /* 顶栏"新增课程"主按钮：保留文字标签，让并排更清晰可点；fab 隐藏避免重复 */
-  #btnAdd{padding:8px 12px;min-height:40px;font-size:13.5px;flex-shrink:0}
-  #btnAdd .t{display:inline;margin-left:4px}
-  .topbar .btn.icon{padding:0;width:40px;height:40px}
+  /* 两条工具带 · 单行横滑 + 紧凑 */
+  .topbar{padding:4px 8px;gap:5px}
+  .toolbar{padding:4px 8px;gap:5px}
+  .logo{font-size:14px}
+  .weather{padding:5px 8px;gap:4px;max-width:130px}
+  .weather .wdeg{font-size:12px}
+  .weather .wcity{max-width:42px;font-size:11px}
+  .btn{padding:8px 11px;min-height:38px;font-size:13px}
+  .btn.icon{width:38px;height:38px;min-height:38px;padding:0;font-size:14px}
+  .chip{padding:6px 10px;min-height:34px;font-size:12px}
+  .seg{padding:2px;flex:0 0 auto}
+  .seg button{padding:6px 10px;min-height:34px;white-space:nowrap;font-size:12px;flex:0 0 auto}
+  /* "新增课程"主按钮：保留文字标签，更易点；fab 隐藏避免重复 */
+  #btnAdd{padding:7px 11px;min-height:36px;font-size:12.5px;flex:0 0 auto}
+  #btnAdd .t{display:inline;margin-left:3px}
   .fab{display:none}
-  .toolbar{top:84px;padding:7px 10px;gap:7px;row-gap:8px}
-  .toolbar > .chips{min-width:0;flex:1}
   .scroll{padding:8px 8px calc(88px + env(safe-area-inset-bottom))}
   .fab{width:50px;height:50px;right:calc(14px + env(safe-area-inset-right));bottom:calc(18px + env(safe-area-inset-bottom));font-size:22px}
   .setrow .lb{font-size:13px}
@@ -493,7 +514,7 @@ button{cursor:pointer;border:0;background:none}
   .blk .bn{font-size:12.5px}
   .blk .bt{font-size:10px}
   .blk .bm{font-size:11px}
-  .chips{min-height:38px;gap:4px}
+  .chips{min-height:34px;gap:4px}
   :root{--gutter:36px}
   /* 让课程块在小屏更紧凑可读 */
   .blk{padding:3px 6px;border-radius:8px}
@@ -529,7 +550,8 @@ button{cursor:pointer;border:0;background:none}
 </head>
 <body data-page-node-id="ZUeflnafIgfQUXymsQAkVd">
 <div class="app" data-page-node-id="Q2paEG0KE0RG6Z8BE3EgPM">
-  <div class="topbar" data-page-node-id="urT30B8Keh2ISf4sqqWxDB">
+  <!-- 工具带 A · 视图带：身份/视图/天数/周数 + ⋯更多。 单行横滑 -->
+  <div class="topbar strip strip-view" data-page-node-id="urT30B8Keh2ISf4sqqWxDB">
     <button class="logo" id="btnPerson" title="切换 / 管理课表" aria-haspopup="dialog"><span class="dot"></span><span class="pname" id="personName">我的课表</span><span class="caret">▾</span></button>
     <button class="weather" id="weatherBtn" title="查看天气 / 切换城市" style="display:none">
       <span class="wcity"><span class="wcity-name">…</span></span>
@@ -537,26 +559,30 @@ button{cursor:pointer;border:0;background:none}
       <span class="wdesc"></span><span class="wtemp"></span>
       <span class="wrefresh">⟳</span>
     </button>
-    <div class="spacer" data-page-node-id="9oc4rVgIUK8cABepB3Rzvg"></div>
-    <div class="wbr" data-page-node-id="wbr01"></div>
     <div class="seg" id="viewSeg" data-page-node-id="OJyp8RdNGxnouCLKkvfkPv">
       <button data-view="week" aria-pressed="true" data-page-node-id="s9heeIsYBhSoFzrbZ8yZBw">周视图</button>
       <button data-view="day" aria-pressed="false" data-page-node-id="kPUENmVQnEgK91WgIdSoo7">日视图</button>
       <button data-view="list" aria-pressed="false">列表</button>
     </div>
+    <div class="chips" id="dayChips" data-page-node-id="GmE2VaAVtDeGgPQN1syKvk"></div>
+    <div class="weekbar" id="weekBar" title="按周查看：显示该周实际要上的课。‹ › 预览其它周，点「本周」回到当前周"></div>
+    <div class="more-wrap">
+      <button class="btn icon" id="btnMore" title="更多：导出图片 / 打印 / 备份" aria-haspopup="true" aria-expanded="false">⋯</button>
+      <div class="more-pop" id="morePop" hidden role="menu">
+        <button class="btn icon" id="btnExportImg" title="导出图片" role="menuitem">🖼️</button>
+        <button class="btn icon" id="btnPrint" title="打印" role="menuitem">🖨️</button>
+        <button class="btn icon" id="btnIO" title="备份 / 恢复" role="menuitem">💾</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 工具带 B · 功能带：新增 / 对比 / 主题 / 设置 + 课程统计。单行横滑 -->
+  <div class="toolbar strip strip-act" data-page-node-id="fkpD1qC3r30BFVaYY5JUKl">
+    <button class="btn primary" id="btnAdd" data-page-node-id="Q6zzGB9BzaI5jjNEGGOW0E"><span data-page-node-id="9D124BHuBfa7yoZ7XeDvui">＋</span><span class="t" data-page-node-id="6ZFgUzivJXGEEbAWhbPy3l">新增课程</span></button>
     <button class="btn icon" id="btnCompare" title="多人课表叠加对比：找共同空闲 / 谁有课" data-page-node-id="d9cmp">🔀</button>
     <button class="btn icon" id="btnTheme" title="切换深色/浅色" data-page-node-id="u35MGFSMF1WEJBZBirzDnN">🌓</button>
     <button class="btn icon" id="btnSet" title="设置" data-page-node-id="DX6T06X896HGobXyGnBFHb">⚙️</button>
-    <button class="btn primary" id="btnAdd" data-page-node-id="Q6zzGB9BzaI5jjNEGGOW0E"><span data-page-node-id="9D124BHuBfa7yoZ7XeDvui">＋</span><span class="t" data-page-node-id="6ZFgUzivJXGEEbAWhbPy3l">新增课程</span></button>
-  </div>
-
-  <div class="toolbar" data-page-node-id="fkpD1qC3r30BFVaYY5JUKl">
-    <div class="chips" id="dayChips" data-page-node-id="GmE2VaAVtDeGgPQN1syKvk"></div>
-    <div class="weekbar" id="weekBar" title="按周查看：显示该周实际要上的课。‹ › 预览其它周，点「本周」回到当前周"></div>
     <div class="meta" id="meta" data-page-node-id="HjdYoQLbApRMuHirw7imX9"></div>
-    <button class="btn" id="btnExportImg" data-page-node-id="VgVnnxj6Rc4eqE7fz7RXa9">🖼️<span class="t" data-page-node-id="FVno6NEqnMFWmb5E8N6hG0">导出图片</span></button>
-    <button class="btn" id="btnPrint" data-page-node-id="OTkihgrGh1izSYggL1loOc">🖨️<span class="t" data-page-node-id="EKc4q0DFg3Aft8qgUfHZcE">打印</span></button>
-    <button class="btn" id="btnIO" data-page-node-id="fc5b6coKsrB6UiNaJy09tw">💾<span class="t" data-page-node-id="e4FBemAqfNLDl2GylGUA6R">备份</span></button>
   </div>
 
   <div class="scroll" id="scroll" data-page-node-id="YRnad80hDYwBK5tE5ppSS4">
@@ -933,6 +959,8 @@ function render(){
   renderPerson();
   if (ui.view === 'list') renderList(); else renderBoard();
   renderMeta();
+  /* 工具带 B 跟随 topbar 高度：渲染后重测（天数 chips/周数变化可能让 topbar 高度变化） */
+  syncTopbarH();
 }
 
 /* 顶栏显示当前课表名称（可点击切换） */
@@ -2776,7 +2804,52 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
 window.addEventListener('resize', () => {
   clearTimeout(window.__rt);
   window.__rt = setTimeout(() => { if (ui.view === 'list') renderList(); else renderBoard(); }, 180);
+  syncTopbarH(); positionMorePop();
 });
+
+/* ============ 两条工具带紧凑化（2026-09-09 改造）============
+   - topbar 与 toolbar 都做单行横滑，flex-wrap:nowrap + overflow-x:auto
+   - toolbar 跟随 topbar 高度：测量 topbar.offsetHeight 写入 --topbar-h
+   - 周数后 ⋯ 更多菜单：position:fixed 避免被父 overflow-x:auto 裁掉
+*/
+function syncTopbarH(){
+  const tb = document.querySelector('.topbar');
+  if (!tb) return;
+  const h = tb.offsetHeight;
+  document.documentElement.style.setProperty('--topbar-h', h + 'px');
+}
+function positionMorePop(){
+  const pop = document.getElementById('morePop'); if (!pop || pop.hidden) return;
+  const btn = document.getElementById('btnMore'); if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  const pw = pop.offsetWidth;
+  const vw = window.innerWidth;
+  // 默认右对齐到按钮右边；空间不够时贴左边
+  let left = r.right - pw;
+  if (left < 4) left = 4;
+  if (left + pw > vw - 4) left = vw - pw - 4;
+  pop.style.left = left + 'px';
+  pop.style.top  = (r.bottom + 6) + 'px';
+}
+function toggleMorePop(force){
+  const pop = document.getElementById('morePop');
+  const btn = document.getElementById('btnMore');
+  if (!pop || !btn) return;
+  const willOpen = (force === true) || (force === undefined && pop.hidden);
+  pop.hidden = !willOpen;
+  btn.setAttribute('aria-expanded', String(willOpen));
+  if (willOpen) positionMorePop();
+}
+$('#btnMore').onclick = e => { e.stopPropagation(); toggleMorePop(); };
+/* 点击菜单项后收起 */
+$('#morePop').onclick = e => { if (e.target.closest('button')) toggleMorePop(false); };
+/* 点击弹层外部 / 滚动 / 切视图 时收起 */
+document.addEventListener('click', e => {
+  const pop = document.getElementById('morePop');
+  if (pop && !pop.hidden && !e.target.closest('#morePop') && !e.target.closest('#btnMore')) toggleMorePop(false);
+});
+window.addEventListener('scroll', () => { const pop = document.getElementById('morePop'); if (pop && !pop.hidden) toggleMorePop(false); }, true);
+$('#viewSeg').addEventListener('click', () => { const pop = document.getElementById('morePop'); if (pop && !pop.hidden) toggleMorePop(false); });
 
 /* 小屏：周视图太挤时退回日视图；列表视图在任何尺寸下都保留 */
 function initView(){
@@ -2792,10 +2865,6 @@ render();
 /* 天气初始化：先读缓存，若无则自动定位；若已有数据也做一次静默刷新 */
 weatherLoad();
 if (weather.lat != null && weather.lon != null) {
-  /* 已有定位 → 显示缓存（若成功）并后台刷新 */
-  renderWeatherBtn();
-  refreshWeather();
-} else {
   applyGeoAndRefresh();
 }
 /* 打开页面后复查一次定位权限：还没授权就再提醒一次（带频率控制） */
