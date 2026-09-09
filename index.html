@@ -24,9 +24,12 @@
     var ok   = localStorage.getItem('course-app-ok') || '';
     var pend = localStorage.getItem('course-app-pending') || '';
     if (pend && pend !== ok){
+      /* 上次新版未能完成启动：丢弃缓存，强制回退到内置版并硬刷新，避免卡在坏版本 */
       localStorage.removeItem('course-app-hot-html');
       localStorage.removeItem('course-app-upd');
       localStorage.removeItem('course-app-pending');
+      document.write('<style id="hot-hide">html,body{visibility:hidden !important}</style>');
+      setTimeout(function(){ try { location.reload(); } catch(e){} }, 600);
       return;
     }
     if (info.version && info.version !== ok) localStorage.setItem('course-app-pending', info.version);
@@ -34,8 +37,20 @@
     var doReplace = function(){
       if (window.__hotLoaded) return;
       window.__hotLoaded = 1;
+      /* 自愈看门狗：新页面若没在 8s 内完成启动（主脚本跑完会清除该标记），
+         说明替换后的页面脚本异常，立即丢弃并回退到内置版本，不让用户卡在坏页面。
+         注意：document.write 会覆盖整个文档，此计时器须在新文档已建立后注入才有效，
+         故把它写进替换文本首部。 */
+      var guardHtml = html.replace('<body',
+        '<script>setTimeout(function(){' +
+        'if(document.getElementById("__upd_ok")===null){' +
+        'try{localStorage.removeItem("course-app-hot-html");' +
+        'localStorage.removeItem("course-app-upd");' +
+        'localStorage.removeItem("course-app-pending");}catch(e){}' +
+        'location.replace(location.href);' +
+        '}},8000);<\/script><body');
       try {
-        document.open(); document.write(html); document.close();
+        document.open(); document.write(guardHtml); document.close();
       } catch (e) {
         try { var s = document.getElementById('hot-hide'); if (s) s.parentNode.removeChild(s); } catch (e2) {}
       }
@@ -579,7 +594,10 @@ button{cursor:pointer;border:0;background:none}
   .topbar,.toolbar,.fab,.modal,.toast{display:none!important}
 /* ============ 启动加载界面 ============ */
 #splash{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
-  background:var(--bg);transition:opacity .28s ease,visibility .28s ease}
+  background:var(--bg);transition:opacity .28s ease,visibility .28s ease;
+  /* 兜底：即使脚本完全没执行，2.6s 后也自动淡出并停止拦截点击，绝不会把界面永久挡死 */
+  animation:splashAuto .3s ease 2.6s forwards}
+@keyframes splashAuto{to{opacity:0;pointer-events:none}}
 #splash.gone{opacity:0;visibility:hidden;pointer-events:none}
 .sp-card{text-align:center;user-select:none;-webkit-user-select:none}
 .sp-logo{font-size:46px;line-height:1;margin-bottom:14px}
@@ -1688,6 +1706,11 @@ function openSettings(){
       <div class="lb">应用更新<small id="sUpdInfo">当前版本 ${APP_VERSION}</small></div>
       <button class="btn" id="sUpdate">检查更新</button>
     </div>
+    <div class="hint" style="margin-top:-2px" id="sUpdState"></div>
+    <div class="setrow" id="sRollRow" style="display:none">
+      <div class="lb">新版异常<small>刚更新的版本打不开 / 按钮失效时，用它回退到 App 内置版</small></div>
+      <button class="btn" id="sRollback">回退内置版</button>
+    </div>
     <div class="hint" style="margin-top:12px">
       数据保存在本机浏览器（localStorage），换设备请用「备份」导出 JSON。
       快捷键：Ctrl/Cmd + S 导出备份。
@@ -1753,10 +1776,25 @@ function openSettings(){
   updateNowWeek();
   const updRefresh = () => {
     const si2 = $('#sUpdInfo'); if (!si2) return;
+    const st  = $('#sUpdState');
+    const rr  = $('#sRollRow');
     const i = updInfo();
-    si2.textContent = (i.version && i.version !== APP_VERSION)
-      ? `新版 ${i.version} 已下载，重启应用生效`
-      : `当前版本 ${APP_VERSION}（已是最新）`;
+    if (i.version && i.version !== APP_VERSION){
+      si2.textContent = `新版 ${i.version} 已下载，重启应用生效`;
+      if (rr) rr.style.display = '';
+    } else {
+      si2.textContent = `当前版本 ${APP_VERSION}`;
+      if (rr) rr.style.display = 'none';
+    }
+    /* 诊断行：只在确有问题时显示原因（含失败原因或待验证缓存），帮助定位“更新后异常” */
+    if (st){
+      let diag = '';
+      const pend = (function(){ try { return localStorage.getItem('course-app-pending') || ''; } catch(e){ return ''; } })();
+      if (i.lastErr) diag = `上次检查：${i.lastErr}。`;
+      else if (i.version && i.version !== APP_VERSION) diag = `已下载 ${i.version}，本次启动应已完成替换。若仍异常，点下方“回退内置版”。`;
+      else if (pend) diag = '检测到上次新版未成功启动，已自动回退到内置版。';
+      st.textContent = diag;
+    }
   };
   $('#sUpdate').onclick = () => {
     const b = $('#sUpdate');
@@ -1764,6 +1802,14 @@ function openSettings(){
     const done = () => { updRefresh(); b.textContent = '检查更新'; b.disabled = false; };
     const p = updCheck(true);
     if (p && typeof p.then === 'function') p.then(done, done); else done();
+  };
+  const rb = $('#sRollback');
+  if (rb) rb.onclick = () => {
+    updRollback();
+    /* 回退动作立刻可见 */
+    const st = $('#sUpdState'); if (st) st.textContent = '已清除新版并回退到内置版，重启后生效。';
+    const si = $('#sUpdInfo');  if (si) si.textContent = `当前版本 ${APP_VERSION}（已回退）`;
+    const rr = $('#sRollRow');  if (rr) rr.style.display = 'none';
   };
   updRefresh();
   $('#sPerson').onclick = () => { closeModal(); openPersonManager(); };
@@ -3526,7 +3572,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.5';
+const APP_VERSION = '2026.09.09.6';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
@@ -3549,21 +3595,38 @@ function updCheck(manual){
     .then(r => { if (!r.ok) throw new Error('net'); return r.json(); })
     .then(m => {
       const remote = String(m.version || '');
-      if (!remote) throw new Error('empty');
+      if (!remote) throw new Error('空版本号');
       if (remote === cur.version){
+        updSaveInfo(Object.assign({}, cur, { checkedAt: Date.now(), lastOk: remote, lastErr: '' }));
         if (manual) toast('已是最新版本 ' + remote);
         return;
       }
       return fetch(UPD_BASE + 'index.html?t=' + Date.now(), { cache: 'no-store' })
-        .then(r => { if (!r.ok) throw new Error('net'); return r.text(); })
+        .then(r => { if (!r.ok) throw new Error('下载页面失败 HTTP ' + r.status); return r.text(); })
         .then(txt => {
-          if (!txt || txt.length < 20000 || txt.indexOf('APP_VERSION') < 0) throw new Error('bad');
+          if (!txt || txt.length < 20000) throw new Error('下载内容过短（' + (txt || '').length + ' 字符）');
+          if (txt.indexOf('APP_VERSION') < 0) throw new Error('下载内容不是课程表页面');
           localStorage.setItem('course-app-hot-html', txt);
-          updSaveInfo({ version: remote, at: Date.now(), note: m.note || '' });
+          updSaveInfo(Object.assign({}, cur, { version: remote, at: Date.now(), note: m.note || '', checkedAt: Date.now(), lastErr: '' }));
           toast('已下载新版 ' + remote + '，重启应用后生效');
         });
     })
-    .catch(() => { if (manual) toast('检查更新失败，请联网后再试'); });
+    .catch(err => {
+      /* 记录真实错误原因，便于在设置里排查（以前只给一句笼统提示） */
+      const msg = (err && err.message) ? err.message : String(err);
+      updSaveInfo(Object.assign({}, updInfo(), { checkedAt: Date.now(), lastErr: msg }));
+      if (manual) toast('检查更新失败：' + msg);
+    });
+}
+/* 丢弃已下载的新版本，回退到 App 内置版本（新版出问题时自救用） */
+function updRollback(){
+  try {
+    localStorage.removeItem('course-app-hot-html');
+    localStorage.removeItem('course-app-pending');
+    const i = updInfo(); delete i.version; delete i.at;
+    updSaveInfo(Object.assign({}, i, { lastErr: '' }));
+  } catch(e){}
+  toast('已清除下载的新版本，重启后回退到内置版');
 }
 function updAutoCheck(){
   if (!updIsApp()) return;
@@ -3571,8 +3634,15 @@ function updAutoCheck(){
 }
 
 updAutoCheck();
-/* 能跑到这里说明当前版本启动正常，打上标记供引导脚本判断是否需要回滚 */
-try { localStorage.setItem(UPD_LS_OK, APP_VERSION); } catch(e){}
+/* 能跑到这里说明当前版本启动正常，打上标记供引导脚本判断是否需要回滚；
+   同时插入 __upd_ok 标记，供更新引导里的“自愈看门狗”确认新版真的跑起来了。 */
+try {
+  localStorage.setItem(UPD_LS_OK, APP_VERSION);
+  var __updOkEl = document.createElement('span');
+  __updOkEl.id = '__upd_ok';
+  __updOkEl.style.display = 'none';
+  document.body.appendChild(__updOkEl);
+} catch(e){}
 </script>
 
 <!-- 注册 Service Worker：使 PWA 可离线使用、可安装到主屏/桌面 -->
