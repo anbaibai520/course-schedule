@@ -577,6 +577,20 @@ button{cursor:pointer;border:0;background:none}
 .pnew .inp{flex:1}
 @media print{
   .topbar,.toolbar,.fab,.modal,.toast{display:none!important}
+/* ============ 启动加载界面 ============ */
+#splash{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
+  background:var(--bg);transition:opacity .28s ease,visibility .28s ease}
+#splash.gone{opacity:0;visibility:hidden;pointer-events:none}
+.sp-card{text-align:center;user-select:none;-webkit-user-select:none}
+.sp-logo{font-size:46px;line-height:1;margin-bottom:14px}
+.sp-title{font-size:16px;font-weight:600;color:var(--text);letter-spacing:3px}
+.sp-bar{width:120px;height:3px;margin:18px auto 0;border-radius:3px;background:var(--line);overflow:hidden}
+.sp-bar i{display:block;width:40%;height:100%;border-radius:3px;background:var(--accent);
+  animation:spSlide 1s ease-in-out infinite}
+@keyframes spSlide{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
+.sp-tip{margin-top:14px;font-size:12px;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){ .sp-bar i{animation:none;width:100%} }
+
   .scroll{padding:0;overflow:visible}
   .board{border:0;box-shadow:none;border-radius:0}
   html[data-theme="dark"]{--bg:#fff;--panel:#fff;--panel2:#f4f5f9;--text:#111;--muted:#666;--line:#ccc;--line2:#e8e8ee;--weekend:#f7f7fa}
@@ -584,6 +598,28 @@ button{cursor:pointer;border:0;background:none}
 </style>
 </head>
 <body data-page-node-id="ZUeflnafIgfQUXymsQAkVd">
+
+<!-- 启动加载界面：脚本就绪后淡出，另有 4s 兜底强制移除，避免因脚本异常一直挡住界面 -->
+<div id="splash">
+  <div class="sp-card">
+    <div class="sp-logo">📅</div>
+    <div class="sp-title">课程表</div>
+    <div class="sp-bar"><i></i></div>
+    <div class="sp-tip">正在加载…</div>
+  </div>
+</div>
+<script>
+/* 兜底：即便主脚本出错 / 卡住，4 秒后也一定移除加载界面 */
+setTimeout(function () {
+  var s = document.getElementById('splash');
+  if (s) { s.className = 'gone'; s.style.display = 'none'; }
+}, 4000);
+window.addEventListener('error', function () {
+  var s = document.getElementById('splash');
+  if (s) { s.className = 'gone'; s.style.display = 'none'; }
+});
+</script>
+
 <div class="app" data-page-node-id="Q2paEG0KE0RG6Z8BE3EgPM">
   <!-- 工具带 A · 视图带：身份/视图/天数/周数 + ⋯更多。 单行横滑 -->
   <div class="topbar strip strip-view" data-page-node-id="urT30B8Keh2ISf4sqqWxDB">
@@ -985,6 +1021,7 @@ function render(){
   if (ui.view === 'list') renderList(); else renderBoard();
   /* 工具带 B 跟随 topbar 高度：渲染后重测（天数 chips/周数变化可能让 topbar 高度变化） */
   syncTopbarH();
+  hideSplash();   /* 首屏已渲染完，收起加载界面 */
 }
 
 /* 顶栏显示当前课表名称（可点击切换） */
@@ -2857,7 +2894,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
 window.addEventListener('resize', () => {
   clearTimeout(window.__rt);
   window.__rt = setTimeout(() => { if (ui.view === 'list') renderList(); else renderBoard(); }, 180);
-  syncTopbarH(); positionMorePop();
+  syncTopbarH();   /* 注意：这里曾调用已随「⋯」菜单删除的 positionMorePop()，转屏时会抛错 */
 });
 
 /* ============ 两条工具带紧凑化（2026-09-09 改造）============
@@ -2875,6 +2912,14 @@ function syncViewSegLabels(){
     if (t && b.textContent !== t) b.textContent = t;
   });
 }
+/* 启动加载界面：主界面渲染完成后淡出。幂等，可重复调用 */
+function hideSplash(){
+  const s = document.getElementById('splash');
+  if (!s || s.classList.contains('gone')) return;
+  s.classList.add('gone');
+  setTimeout(() => { s.style.display = 'none'; }, 320);
+}
+
 function syncTopbarH(){
   const tb = document.querySelector('.topbar');
   if (!tb) return;
@@ -3481,7 +3526,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.4';
+const APP_VERSION = '2026.09.09.5';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
