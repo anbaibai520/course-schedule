@@ -154,6 +154,18 @@ button{cursor:pointer;border:0;background:none}
 }
 .week-sel .ws-ic{font-size:12px;color:var(--muted);pointer-events:none}
 .week-sel .ws-caret{font-size:9px;color:var(--muted);pointer-events:none}
+/* 日视图"选星期几"下拉（替代原滑动 chips，仅日视图显示，位于顶栏视图带） */
+.day-sel{
+  display:inline-flex;align-items:center;gap:4px;position:relative;
+  background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  padding:0 6px;height:36px;font-size:12.5px;color:var(--text);flex:0 0 auto;
+}
+.day-sel select{
+  appearance:none;-webkit-appearance:none;background:transparent;border:0;outline:0;
+  color:var(--text);font-size:12.5px;font-weight:600;cursor:pointer;padding:4px 0;
+  font-variant-numeric:tabular-nums;
+}
+.day-sel .ds-caret{font-size:9px;color:var(--muted);pointer-events:none}
 .seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
 .seg button{padding:6px 14px;border-radius:8px;font-size:13px;color:var(--muted);font-weight:600}
 .seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
@@ -679,7 +691,10 @@ window.addEventListener('error', function () {
       <button data-view="day" aria-pressed="false" data-page-node-id="kPUENmVQnEgK91WgIdSoo7">日视图</button>
       <button data-view="list" aria-pressed="false">列表</button>
     </div>
-    <div class="chips" id="dayChips" data-page-node-id="GmE2VaAVtDeGgPQN1syKvk"></div>
+    <span class="day-sel" id="daySel" style="display:none" title="选择星期几（仅日视图）">
+      <select id="daySelect" aria-label="选择星期几"></select>
+      <span class="ds-caret">▾</span>
+    </span>
     <div class="weekbar" id="weekBar" title="按周查看：显示该周实际要上的课。‹ › 预览其它周，点「本周」回到当前周"></div>
   </div>
 
@@ -1080,15 +1095,19 @@ function renderPerson(){
   $('#btnPerson').title = `当前：${p ? p.name : '我的课表'} · 点击切换 / 管理课表`;
 }
 
+/* 日视图下"选星期几"：改为下拉菜单（替代原滑动 chips），仅日视图呈现；非日视图隐藏 */
 function renderChips(){
-  const box = $('#dayChips');
+  const wrap = $('#daySel');
+  const sel  = $('#daySelect');
   if (ui.view === 'day') {
-    box.style.display = 'flex';
-    box.innerHTML = visibleDays().map(d =>
-      `<button class="chip" data-day="${d}" aria-pressed="${d === ui.day}">${DAY_NAMES[d]}</button>`).join('');
+    wrap.style.display = 'inline-flex';
+    let html = '';
+    for (let d = 1; d <= 7; d++)
+      html += `<option value="${d}"${d === ui.day ? ' selected' : ''}>${DAY_NAMES[d]}</option>`;
+    sel.innerHTML = html;
   } else {
-    box.innerHTML = '';
-    box.style.display = 'none';
+    wrap.style.display = 'none';
+    sel.innerHTML = '';
   }
 }
 
@@ -2973,9 +2992,8 @@ $('#viewSeg').onclick = e => {
   ui.view = b.dataset.view;
   state.settings.view = ui.view; save(); render();
 };
-$('#dayChips').onclick = e => {
-  const b = e.target.closest('.chip'); if (!b) return;
-  ui.day = +b.dataset.day; render();
+$('#daySelect').onchange = e => {
+  ui.day = +e.target.value; render();
 };
 /* 周次条：‹ › 预览相邻周，"本周"回到真实周，"设置"打开学期配置 */
 $('#weekBar').onclick = e => {
@@ -3639,7 +3657,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.8';
+const APP_VERSION = '2026.09.09.9';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
