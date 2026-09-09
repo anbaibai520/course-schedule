@@ -881,7 +881,7 @@ function defaults(){
     version: 2,
     settings: { theme:'auto', accent:'#4f7cff', dayStart:7, dayEnd:22, hourHeight:56,
                 snap:5, showWeekend:true, firstDay:1, view:'week',
-                totalWeeks:20, termStart: defaultTermStart(), weekFilter:true },
+                totalWeeks:20, termStart: defaultTermStart(), weekFilter:true, reminderMin:10 },
     people: [p],
     activeId: p.id
   };
@@ -978,6 +978,81 @@ function save(){
   try { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
   catch (e) { memFallback = state; console.warn('保存失败（可能无本地存储权限）', e); }
   emit('change', state);
+  scheduleNotifySoon();
+}
+
+/* ------------------------- 本地上课提醒（仅原生安卓） -------------------------
+   通过 @capacitor/local-notifications 在上课前 N 分钟弹出系统通知。
+   网页 / PWA 端不启用（Capacitor.isNativePlatform() 为 false）。
+   settings.reminderMin：0 = 关闭，否则为提前提醒的分钟数（默认 10）。 */
+let _notifyTimer = null;
+function isNativeApp(){ return !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()); }
+function notifyPlugin(){ return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.LocalNotifications) || null; }
+function scheduleNotifySoon(){ if (_notifyTimer) clearTimeout(_notifyTimer); _notifyTimer = setTimeout(rescheduleNotifications, 1500); }
+function notifyId(a, b, w){
+  const str = (a || '') + '|' + (b || '') + '|' + w;
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) % 2000000000 + 1;
+}
+async function rescheduleNotifications(){
+  if (!isNativeApp()) return;                       // 仅安卓 APK 启用
+  const LN = notifyPlugin();
+  if (!LN) return;                                  // 插件不可用 → 静默跳过
+  const S = state.settings;
+  if (!S.reminderMin || S.reminderMin <= 0) { try { await LN.cancelAll(); } catch (e) {} return; }
+  // 权限
+  let perm = null;
+  try { perm = await LN.checkPermissions(); } catch (e) {}
+  if (!perm || (perm.display !== 'granted' && perm.notifications !== 'granted')) {
+    try { perm = await LN.requestPermissions(); } catch (e) {}
+  }
+  const granted = perm && (perm.display === 'granted' || perm.notifications === 'granted');
+  if (!granted) return;                             // 用户未授权 → 跳过
+  // 计算未来提醒
+  const base = parseDay(S.termStart);
+  if (!base) { try { await LN.cancelAll(); } catch (e) {} return; }
+  const total = clamp(+S.totalWeeks || 20, 1, 30);
+  const lead = +S.reminderMin;
+  const curW = realWeek() || 1;
+  const now = Date.now();
+  const list = [];
+  const courses = state.courses || [];
+  let guard = 0; const MAX = 250;
+  for (const c of courses) {
+    if (!c || !Array.isArray(c.sessions)) continue;
+    for (const s of c.sessions) {
+      if (!s) continue;
+      const d = +s.day, startMin = +s.start;
+      for (let w = curW; w <= total; w++) {
+        if (!weeksHas(s.weeks, w)) continue;
+        const dt = new Date(base.getTime());
+        dt.setDate(dt.getDate() + (w - 1) * 7 + (d - 1));
+        dt.setHours(0, 0, 0, 0);
+        dt.setMinutes(dt.getMinutes() + startMin - lead);
+        if (dt.getTime() <= now) continue;         // 过期（含本周已过的）跳过
+        if (++guard > MAX) break;
+        list.push({
+          id: notifyId(c.id, s.id, w),
+          title: c.name || '课程提醒',
+          body: DAY_NAMES[d] + ' ' + fmt(startMin) + ' 开始' + (s.location ? ' · ' + s.location : ''),
+          schedule: { at: dt, allowWhileIdle: true, exact: true }
+        });
+      }
+      if (guard > MAX) break;
+    }
+    if (guard > MAX) break;
+  }
+  try {
+    await LN.cancelAll();
+    if (list.length) await LN.schedule({ notifications: list });
+  } catch (e) {
+    // 精确闹钟权限不足（Android12+）时降级为不精确排程
+    try {
+      const list2 = list.map(n => { const c2 = Object.assign({}, n); c2.schedule = Object.assign({}, c2.schedule); delete c2.schedule.exact; return c2; });
+      await LN.schedule({ notifications: list2 });
+    } catch (e2) { console.warn('排程上课提醒失败', e2); }
+  }
 }
 
 /* ------------------------- UI 状态 ------------------------- */
@@ -1718,6 +1793,15 @@ function openSettings(){
       <button class="switch" id="sWeekFilter" aria-pressed="${!!S.weekFilter}"></button>
     </div>
     <div class="setrow">
+      <div class="lb">上课前提醒<small>仅安卓版：上课前弹系统通知（网页端不提醒）</small></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="switch" id="sRemind" aria-pressed="${!!(S.reminderMin > 0)}"></button>
+        <select id="sRemindMin">
+          ${[5,10,15,20,30].map(v => `<option value="${v}" ${v === (S.reminderMin > 0 ? S.reminderMin : 10) ? 'selected' : ''}>${v} 分钟</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="setrow">
       <div class="lb">学期总周数<small>如 1 学期 20 周</small></div>
       <input type="number" id="sTotalWeeks" min="1" max="30" value="${S.totalWeeks}">
     </div>
@@ -1797,6 +1881,7 @@ function openSettings(){
     S.hourHeight = +$('#sH').value;
     S.snap = +$('#sSnap').value;
     S.weekFilter = $('#sWeekFilter').getAttribute('aria-pressed') === 'true';
+    S.reminderMin = $('#sRemind').getAttribute('aria-pressed') === 'true' ? (+( $('#sRemindMin').value) || 10) : 0;
     S.totalWeeks = clamp(+$('#sTotalWeeks').value || 20, 1, 30);
     S.termStart = $('#sTermStart').value || '';
     save(); render();
@@ -1837,6 +1922,12 @@ function openSettings(){
     b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
     commit();
   };
+  $('#sRemind').onclick = () => {
+    const b = $('#sRemind');
+    b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
+    commit();
+  };
+  $('#sRemindMin').onchange = commit;
   $('#sTotalWeeks').onchange = commit;
   $('#sTermStart').onchange = commit;
   $('#sTermStart').oninput = updateNowWeek;
@@ -3060,6 +3151,7 @@ function initView(){
 state = load();
 initView();
 render();
+scheduleNotifySoon();
 /* 天气初始化：先读缓存，若无则自动定位；若已有数据也做一次静默刷新 */
 weatherLoad();
 if (weather.lat != null && weather.lon != null) {
@@ -3647,7 +3739,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.10';
+const APP_VERSION = '2026.09.09.11';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
