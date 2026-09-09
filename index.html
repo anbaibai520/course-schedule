@@ -139,18 +139,6 @@ button{cursor:pointer;border:0;background:none}
   position:sticky;right:0;background:var(--panel);padding-left:10px;
   background:linear-gradient(to right,transparent,var(--panel) 8px)}
 
-/* ============ 周数后 ⋯ 更多菜单 ============ */
-.more-wrap{position:relative;flex:0 0 auto}
-/* 使用 position:fixed 避免被父级 overflow-x:auto 裁掉；位置由 JS 同步按钮 getBoundingClientRect */
-.more-pop{
-  position:fixed;
-  display:flex;gap:4px;padding:5px;
-  background:var(--panel);border:1px solid var(--line);border-radius:11px;
-  box-shadow:var(--shadow);z-index:60;
-}
-.more-pop[hidden]{display:none}
-#btnMore[aria-expanded="true"]{background:var(--panel2);color:var(--accent)}
-
 /* ============ 周次条：显示当前周 + 可预览其它周 ============ */
 .weekbar{display:none;align-items:center;gap:2px;font-size:12.5px;color:var(--text);white-space:nowrap;
   padding:2px 3px;border:1px solid var(--line);border-radius:9px;background:var(--panel2)}
@@ -529,15 +517,19 @@ button{cursor:pointer;border:0;background:none}
 }
 @media(max-width:520px){
   /* 两条工具带 · 单行横滑 + 紧凑 */
-  .topbar{padding:4px 8px;gap:5px}
-  .toolbar{padding:4px 8px;gap:5px}
+  /* 左右也吃安全区：横屏 / 刘海机不会把首末按钮顶到边 */
+  .topbar{padding:4px calc(8px + env(safe-area-inset-right)) 4px calc(8px + env(safe-area-inset-left));gap:5px}
+  .toolbar{padding:4px calc(8px + env(safe-area-inset-right)) 4px calc(8px + env(safe-area-inset-left));gap:5px}
   .logo{font-size:14px}
-  .weather{padding:5px 8px;gap:4px;max-width:130px}
+  /* 天气只留图标+温度：把横向空间让给「周一~周日」天数选择 */
+  .weather{padding:5px 7px;gap:3px;max-width:62px}
   .weather .wdeg{font-size:12px}
-  .weather .wcity{max-width:42px;font-size:11px}
+  .weather .wcity{display:none}
   .btn{padding:8px 11px;min-height:38px;font-size:13px}
   .btn.icon{width:38px;height:38px;min-height:38px;padding:0;font-size:14px}
-  .chip{padding:6px 10px;min-height:34px;font-size:12px}
+  /* 天数 chip 收紧：尽量让一周 5~7 天一眼看全 */
+  .chip{padding:5px 9px;min-height:32px;font-size:11.5px}
+  .chips{gap:4px}
   .seg{padding:2px;flex:0 0 auto}
   .seg button{padding:6px 10px;min-height:34px;white-space:nowrap;font-size:12px;flex:0 0 auto}
   /* "新增课程"主按钮：保留文字标签，更易点；fab 隐藏避免重复 */
@@ -609,14 +601,6 @@ button{cursor:pointer;border:0;background:none}
     </div>
     <div class="chips" id="dayChips" data-page-node-id="GmE2VaAVtDeGgPQN1syKvk"></div>
     <div class="weekbar" id="weekBar" title="按周查看：显示该周实际要上的课。‹ › 预览其它周，点「本周」回到当前周"></div>
-    <div class="more-wrap">
-      <button class="btn icon" id="btnMore" title="更多：导出图片 / 打印 / 备份" aria-haspopup="true" aria-expanded="false">⋯</button>
-      <div class="more-pop" id="morePop" hidden role="menu">
-        <button class="btn icon" id="btnExportImg" title="导出图片" role="menuitem">🖼️</button>
-        <button class="btn icon" id="btnPrint" title="打印" role="menuitem">🖨️</button>
-        <button class="btn icon" id="btnIO" title="备份 / 恢复" role="menuitem">💾</button>
-      </div>
-    </div>
   </div>
 
   <!-- 工具带 B · 功能带：新增 / 对比 / 主题 / 设置 + 课程统计。单行横滑 -->
@@ -1654,6 +1638,18 @@ function openSettings(){
       <button class="btn" id="sPerson">管理课表</button>
     </div>
     <div class="setrow">
+      <div class="lb">导出图片<small>把当前课表存成一张长图，方便发群或设壁纸</small></div>
+      <button class="btn" id="sExportImg">导出图片</button>
+    </div>
+    <div class="setrow">
+      <div class="lb">打印 / 存 PDF<small>调用系统打印，可另存为 PDF</small></div>
+      <button class="btn" id="sPrint">打印</button>
+    </div>
+    <div class="setrow">
+      <div class="lb">备份 / 恢复<small>导出 JSON 存好，换设备时导入即可还原</small></div>
+      <button class="btn" id="sIO">备份</button>
+    </div>
+    <div class="setrow">
       <div class="lb">清空「${esc(personName())}」的全部课程<small>不可恢复，请先备份（不影响其他课表）</small></div>
       <button class="btn danger" id="sClear">清空</button>
     </div>
@@ -1744,6 +1740,10 @@ function openSettings(){
   };
   updRefresh();
   $('#sPerson').onclick = () => { closeModal(); openPersonManager(); };
+  /* 导出/打印/备份：先关设置弹窗，避免遮住导出结果或打印预览 */
+  $('#sExportImg').onclick = () => { closeModal(); exportPNG(); };
+  $('#sPrint').onclick    = () => { closeModal(); setTimeout(() => window.print(), 120); };
+  $('#sIO').onclick       = () => { closeModal(); openIO(); };
   $('#sClear').onclick = async () => {
     const r = await askModal('清空课程',
       `将删除「<b>${esc(personName())}</b>」的全部课程数据，且无法撤销。建议先导出备份。`,
@@ -2877,9 +2877,6 @@ $('#btnAdd').onclick = () => openEditor(null);
 $('#fab').onclick = () => openEditor(null);
 $('#btnPerson').onclick = openPersonManager;
 $('#btnSet').onclick = openSettings;
-$('#btnIO').onclick = openIO;
-$('#btnExportImg').onclick = exportPNG;
-$('#btnPrint').onclick = () => window.print();
 $('#btnAddPerson').onclick = openAddPerson;
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if (state.settings.theme === 'auto') applyTheme();
@@ -2895,44 +2892,23 @@ window.addEventListener('resize', () => {
    - toolbar 跟随 topbar 高度：测量 topbar.offsetHeight 写入 --topbar-h
    - 周数后 ⋯ 更多菜单：position:fixed 避免被父 overflow-x:auto 裁掉
 */
+/* 窄屏把「周视图/日视图/列表」缩成「周/日/列表」，省下的宽度给天数选择 */
+function syncViewSegLabels(){
+  const narrow = window.innerWidth <= 560;
+  const map = narrow ? { week: '周', day: '日', list: '列表' }
+                     : { week: '周视图', day: '日视图', list: '列表' };
+  document.querySelectorAll('#viewSeg button').forEach(b => {
+    const t = map[b.dataset.view];
+    if (t && b.textContent !== t) b.textContent = t;
+  });
+}
 function syncTopbarH(){
   const tb = document.querySelector('.topbar');
   if (!tb) return;
   const h = tb.offsetHeight;
   document.documentElement.style.setProperty('--topbar-h', h + 'px');
+  syncViewSegLabels();
 }
-function positionMorePop(){
-  const pop = document.getElementById('morePop'); if (!pop || pop.hidden) return;
-  const btn = document.getElementById('btnMore'); if (!btn) return;
-  const r = btn.getBoundingClientRect();
-  const pw = pop.offsetWidth;
-  const vw = window.innerWidth;
-  // 默认右对齐到按钮右边；空间不够时贴左边
-  let left = r.right - pw;
-  if (left < 4) left = 4;
-  if (left + pw > vw - 4) left = vw - pw - 4;
-  pop.style.left = left + 'px';
-  pop.style.top  = (r.bottom + 6) + 'px';
-}
-function toggleMorePop(force){
-  const pop = document.getElementById('morePop');
-  const btn = document.getElementById('btnMore');
-  if (!pop || !btn) return;
-  const willOpen = (force === true) || (force === undefined && pop.hidden);
-  pop.hidden = !willOpen;
-  btn.setAttribute('aria-expanded', String(willOpen));
-  if (willOpen) positionMorePop();
-}
-$('#btnMore').onclick = e => { e.stopPropagation(); toggleMorePop(); };
-/* 点击菜单项后收起 */
-$('#morePop').onclick = e => { if (e.target.closest('button')) toggleMorePop(false); };
-/* 点击弹层外部 / 滚动 / 切视图 时收起 */
-document.addEventListener('click', e => {
-  const pop = document.getElementById('morePop');
-  if (pop && !pop.hidden && !e.target.closest('#morePop') && !e.target.closest('#btnMore')) toggleMorePop(false);
-});
-window.addEventListener('scroll', () => { const pop = document.getElementById('morePop'); if (pop && !pop.hidden) toggleMorePop(false); }, true);
-$('#viewSeg').addEventListener('click', () => { const pop = document.getElementById('morePop'); if (pop && !pop.hidden) toggleMorePop(false); });
 
 /* 小屏：周视图太挤时退回日视图；列表视图在任何尺寸下都保留 */
 function initView(){
@@ -3532,7 +3508,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.1';
+const APP_VERSION = '2026.09.09.2';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
