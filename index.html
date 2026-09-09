@@ -2,6 +2,49 @@
 <html lang="zh-CN" data-theme="light" data-page-node-id="EF8gztc9lUUilSqfKcHXTo">
 <head data-page-node-id="jHuIamleOvIniK0FIGDVKt">
 <meta charset="UTF-8" data-page-node-id="t5OAxNYxpHVUzD9hJ1AL14">
+<script>
+/* ============ 应用内更新 · 启动引导 ============
+   作用：打包成 App 后，内置网页是死的；这里在启动时检查是否已下载好新版，
+   有则整体替换文档，实现"不重装 APK 也能升级"。
+   ① 仅在 App 内启用（网页版本身即最新，不参与）；
+   ② window.__hotLoaded 防止替换后的文档再次触发，避免死循环；
+   ③ pending/ok 版本比对实现崩溃自动回滚到内置版本；
+      否则浏览器会把原文档剩余内容继续解析进来，造成新旧内容叠加；
+      等待期间先用样式隐藏，避免旧界面闪一下。 */
+(function(){
+  try{
+    if (window.__hotLoaded) return;
+    var isApp = !!window.Capacitor || location.protocol === 'file:' ||
+                location.protocol === 'capacitor:' || location.hostname === 'localhost';
+    if (!isApp) return;
+    var html = localStorage.getItem('course-app-hot-html');
+    if (!html || html.length < 20000) return;
+    var info = {};
+    try { info = JSON.parse(localStorage.getItem('course-app-upd') || '{}'); } catch(e){}
+    var ok   = localStorage.getItem('course-app-ok') || '';
+    var pend = localStorage.getItem('course-app-pending') || '';
+    if (pend && pend !== ok){
+      localStorage.removeItem('course-app-hot-html');
+      localStorage.removeItem('course-app-upd');
+      localStorage.removeItem('course-app-pending');
+      return;
+    }
+    if (info.version && info.version !== ok) localStorage.setItem('course-app-pending', info.version);
+    document.write('<style id="hot-hide">html,body{visibility:hidden !important}</style>');
+    var doReplace = function(){
+      if (window.__hotLoaded) return;
+      window.__hotLoaded = 1;
+      try {
+        document.open(); document.write(html); document.close();
+      } catch (e) {
+        try { var s = document.getElementById('hot-hide'); if (s) s.parentNode.removeChild(s); } catch (e2) {}
+      }
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', doReplace);
+    else doReplace();
+  }catch(e){}
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" data-page-node-id="ZomC0GeyuZ9xXnfiVWXxHY">
 <meta name="theme-color" content="#4f7cff" data-page-node-id="vGMpBa5GOWPU20y4ZaY5M9">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -498,8 +541,8 @@ button{cursor:pointer;border:0;background:none}
   .seg{padding:2px;flex:0 0 auto}
   .seg button{padding:6px 10px;min-height:34px;white-space:nowrap;font-size:12px;flex:0 0 auto}
   /* "新增课程"主按钮：保留文字标签，更易点；fab 隐藏避免重复 */
-  #btnAdd{padding:7px 11px;min-height:36px;font-size:12.5px;flex:0 0 auto}
-  #btnAdd .t{display:inline;margin-left:3px}
+  #btnAdd,#btnAddPerson{padding:7px 11px;min-height:36px;font-size:12.5px;flex:0 0 auto}
+  #btnAdd .t,#btnAddPerson .t{display:inline;margin-left:3px}
   .fab{display:none}
   .scroll{padding:8px 8px calc(88px + env(safe-area-inset-bottom))}
   .fab{width:50px;height:50px;right:calc(14px + env(safe-area-inset-right));bottom:calc(18px + env(safe-area-inset-bottom));font-size:22px}
@@ -580,7 +623,7 @@ button{cursor:pointer;border:0;background:none}
   <div class="toolbar strip strip-act" data-page-node-id="fkpD1qC3r30BFVaYY5JUKl">
     <button class="btn primary" id="btnAdd" data-page-node-id="Q6zzGB9BzaI5jjNEGGOW0E"><span data-page-node-id="9D124BHuBfa7yoZ7XeDvui">＋</span><span class="t" data-page-node-id="6ZFgUzivJXGEEbAWhbPy3l">新增课程</span></button>
     <button class="btn icon" id="btnCompare" title="多人课表叠加对比：找共同空闲 / 谁有课" data-page-node-id="d9cmp">🔀</button>
-    <button class="btn icon" id="btnTheme" title="切换深色/浅色" data-page-node-id="u35MGFSMF1WEJBZBirzDnN">🌓</button>
+    <button class="btn" id="btnAddPerson" title="新建一份课表，可以放自己或同学的课表"><span>＋</span><span class="t">课表</span></button>
     <button class="btn icon" id="btnSet" title="设置" data-page-node-id="DX6T06X896HGobXyGnBFHb">⚙️</button>
     <div class="meta" id="meta" data-page-node-id="HjdYoQLbApRMuHirw7imX9"></div>
   </div>
@@ -988,11 +1031,11 @@ function renderWeek(){
   const S = state.settings;
   const rw = realWeek();                 // 真实本周（可能 null=未开学/关闭）
   const wk = viewWeek();                 // 实际过滤周（null=全部）
-  if (!S.weekFilter || !S.termStart){     // 关闭或未配置 → 提供入口引导
-    bar.classList.toggle('on', !S.weekFilter || !S.termStart);
-    bar.innerHTML = S.weekFilter
-      ? `<span class="wb-off">按周查看<span class="wbset" data-w="set">设置开学周</span></span>`
-      : `<span class="wb-off">按周查看已关闭<span class="wbset" data-w="set">设置</span></span>`;
+  if (!S.weekFilter || !S.termStart){
+    /* 关闭按周或未设开学周：整条隐藏，把顶栏宽度让给日期选择（周一~周日）。
+       开启入口仍在「设置 → 按周上课」，功能不丢。 */
+    bar.classList.remove('on');
+    bar.innerHTML = '';
     return;
   }
   bar.classList.add('on');
@@ -1550,9 +1593,12 @@ function openSettings(){
     </div>
     <div class="setrow">
       <div class="lb">外观<small>深色模式会自动跟随系统</small></div>
-      <select id="sTheme">
-        <option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option>
-      </select>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="sTheme">
+          <option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option>
+        </select>
+        <button class="btn icon" id="sThemeToggle" title="立即切换深色 / 浅色">🌓</button>
+      </div>
     </div>
     <div class="setrow">
       <div class="lb">主题色<small>按钮、选中态、强调色</small></div>
@@ -1615,6 +1661,10 @@ function openSettings(){
       <div class="lb">恢复默认设置<small>外观、时间范围、周次等还原为初始默认值（不影响已录的课程数据）</small></div>
       <button class="btn" id="sReset">恢复默认</button>
     </div>
+    <div class="setrow">
+      <div class="lb">应用更新<small id="sUpdInfo">当前版本 ${APP_VERSION}</small></div>
+      <button class="btn" id="sUpdate">检查更新</button>
+    </div>
     <div class="hint" style="margin-top:12px">
       数据保存在本机浏览器（localStorage），换设备请用「备份」导出 JSON。
       快捷键：Ctrl/Cmd + S 导出备份。
@@ -1651,6 +1701,12 @@ function openSettings(){
   };
   const cb = $('#sCloud'); if (cb) cb.onclick = openCloud;
   $('#sTheme').onchange = commit;
+  $('#sThemeToggle').onclick = () => {
+    const cur = document.documentElement.dataset.theme;
+    state.settings.theme = cur === 'dark' ? 'light' : 'dark';
+    $('#sTheme').value = state.settings.theme;
+    save(); render(); toast(state.settings.theme === 'dark' ? '已切换到深色' : '已切换到浅色');
+  };
   $('#sAccent').oninput = commit;
   $('#sFirst').onchange = commit;
   $('#sStart').onchange = commit;
@@ -1672,6 +1728,21 @@ function openSettings(){
   $('#sTermStart').oninput = updateNowWeek;
   $('#sTotalWeeks').oninput = updateNowWeek;
   updateNowWeek();
+  const updRefresh = () => {
+    const si2 = $('#sUpdInfo'); if (!si2) return;
+    const i = updInfo();
+    si2.textContent = (i.version && i.version !== APP_VERSION)
+      ? `新版 ${i.version} 已下载，重启应用生效`
+      : `当前版本 ${APP_VERSION}（已是最新）`;
+  };
+  $('#sUpdate').onclick = () => {
+    const b = $('#sUpdate');
+    b.textContent = '检查中…'; b.disabled = true;
+    const done = () => { updRefresh(); b.textContent = '检查更新'; b.disabled = false; };
+    const p = updCheck(true);
+    if (p && typeof p.then === 'function') p.then(done, done); else done();
+  };
+  updRefresh();
   $('#sPerson').onclick = () => { closeModal(); openPersonManager(); };
   $('#sClear').onclick = async () => {
     const r = await askModal('清空课程',
@@ -1743,6 +1814,22 @@ async function removePerson(id){
   if (state.activeId === id) state.activeId = state.people[Math.min(i, state.people.length - 1)].id;
   save(); render(); toast('已删除「' + p.name + '」');
 }
+/* 工具栏「新建课表」：先起名字再建，避免建出一堆同名「新建课表」 */
+function openAddPerson(){
+  openModal('新建课表',
+    `<div class="hint" style="margin-bottom:10px">给课表起个名字，比如「我的大一上」「室友小李」。新建后会自动切换过去。</div>
+     <input class="inp" id="apName" maxlength="20" placeholder="课表名称" autocomplete="off" style="width:100%">`,
+    `<button class="btn" data-close>取消</button><button class="btn primary" id="apOk">创建</button>`);
+  const doAdd = () => {
+    const v = String($('#apName').value || '').trim();
+    if (!v) { $('#apName').focus(); return; }
+    addPerson(v); closeModal(); toast('已新建并切换到「' + v + '」');
+  };
+  $('#apOk').onclick = doAdd;
+  $('#apName').onkeydown = e => { if (e.key === 'Enter') doAdd(); };
+  setTimeout(() => { const el = $('#apName'); if (el) el.focus(); }, 60);
+}
+
 function openPersonManager(){
   const rows = state.people.map((p, i) => `
     <div class="prow ${p.id === state.activeId ? 'cur' : ''}" data-pid="${p.id}" title="点击切换到这份课表">
@@ -2793,11 +2880,7 @@ $('#btnSet').onclick = openSettings;
 $('#btnIO').onclick = openIO;
 $('#btnExportImg').onclick = exportPNG;
 $('#btnPrint').onclick = () => window.print();
-$('#btnTheme').onclick = () => {
-  const cur = document.documentElement.dataset.theme;
-  state.settings.theme = cur === 'dark' ? 'light' : 'dark';
-  save(); render(); toast(state.settings.theme === 'dark' ? '已切换到深色' : '已切换到浅色');
-};
+$('#btnAddPerson').onclick = openAddPerson;
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if (state.settings.theme === 'auto') applyTheme();
 });
@@ -3436,6 +3519,66 @@ window.CourseSchedule = {
 cloudLoad();
 if (cloudOn()) cloudHello().catch(() => {});
 else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，可跳过 */
+
+/* =====================================================================
+   应用内更新（打包 App 自检升级）
+   ---------------------------------------------------------------------
+   APK 内置的网页是打包时的静态副本，不会随 GitHub Pages 自动变新。
+   这里在 App 启动时比对线上 version.json，发现新版就下载整份 index.html
+   存入 localStorage；下次启动由 head 里的引导脚本整体替换生效。
+   · 版本号：部署脚本会从这个常量自动提取并生成线上 version.json，
+     所以每次改动代码记得把 APP_VERSION 往上调一档。
+   · 回滚：新版若没能正常启动（跑不到本段末尾写 course-app-ok），
+     下次启动引导脚本会丢弃缓存、自动回退到内置版本。
+   · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
+   ===================================================================== */
+const APP_VERSION = '2026.09.09.1';
+const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
+const UPD_LS_INFO = 'course-app-upd';
+const UPD_LS_OK   = 'course-app-ok';
+
+function updIsApp(){
+  return !!window.Capacitor || location.protocol === 'file:' ||
+         location.protocol === 'capacitor:' || location.hostname === 'localhost';
+}
+function updInfo(){
+  try { return JSON.parse(localStorage.getItem(UPD_LS_INFO) || '{}'); } catch(e){ return {}; }
+}
+function updSaveInfo(o){
+  try { localStorage.setItem(UPD_LS_INFO, JSON.stringify(o)); } catch(e){}
+}
+/* manual=true 给可见反馈；自动检查全程静默，失败也不打扰 */
+function updCheck(manual){
+  if (!updIsApp()){ if (manual) toast('网页版打开即为最新，无需更新'); return; }
+  const cur = updInfo();
+  return fetch(UPD_BASE + 'version.json?t=' + Date.now(), { cache: 'no-store' })
+    .then(r => { if (!r.ok) throw new Error('net'); return r.json(); })
+    .then(m => {
+      const remote = String(m.version || '');
+      if (!remote) throw new Error('empty');
+      if (remote === cur.version){
+        if (manual) toast('已是最新版本 ' + remote);
+        return;
+      }
+      return fetch(UPD_BASE + 'index.html?t=' + Date.now(), { cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error('net'); return r.text(); })
+        .then(txt => {
+          if (!txt || txt.length < 20000 || txt.indexOf('APP_VERSION') < 0) throw new Error('bad');
+          localStorage.setItem('course-app-hot-html', txt);
+          updSaveInfo({ version: remote, at: Date.now(), note: m.note || '' });
+          toast('已下载新版 ' + remote + '，重启应用后生效');
+        });
+    })
+    .catch(() => { if (manual) toast('检查更新失败，请联网后再试'); });
+}
+function updAutoCheck(){
+  if (!updIsApp()) return;
+  setTimeout(function(){ updCheck(false); }, 4000);   /* 让首屏先渲染完，不抢资源 */
+}
+
+updAutoCheck();
+/* 能跑到这里说明当前版本启动正常，打上标记供引导脚本判断是否需要回滚 */
+try { localStorage.setItem(UPD_LS_OK, APP_VERSION); } catch(e){}
 </script>
 
 <!-- 注册 Service Worker：使 PWA 可离线使用、可安装到主屏/桌面 -->
