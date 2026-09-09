@@ -128,6 +128,19 @@ button{cursor:pointer;border:0;background:none}
 .btn.danger{color:#e5484d;border-color:color-mix(in srgb,#e5484d 40%,var(--line))}
 .btn.danger:hover{background:color-mix(in srgb,#e5484d 12%,transparent);color:#e5484d}
 .btn.icon{padding:8px;width:36px;justify-content:center}
+/* 周数下拉（仅日视图显示，位于功能带"新增课程"旁）：紧凑、样式与 .btn 协调 */
+.week-sel{
+  display:inline-flex;align-items:center;gap:4px;position:relative;
+  background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  padding:0 6px 0 8px;height:36px;font-size:12.5px;color:var(--text);flex:0 0 auto;
+}
+.week-sel select{
+  appearance:none;-webkit-appearance:none;background:transparent;border:0;outline:0;
+  color:var(--text);font-size:12.5px;font-weight:600;cursor:pointer;padding:4px 0;
+  font-variant-numeric:tabular-nums;max-width:92px;text-overflow:ellipsis;
+}
+.week-sel .ws-ic{font-size:12px;color:var(--muted);pointer-events:none}
+.week-sel .ws-caret{font-size:9px;color:var(--muted);pointer-events:none}
 .seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
 .seg button{padding:6px 14px;border-radius:8px;font-size:13px;color:var(--muted);font-weight:600}
 .seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
@@ -657,9 +670,14 @@ window.addEventListener('error', function () {
     <div class="weekbar" id="weekBar" title="按周查看：显示该周实际要上的课。‹ › 预览其它周，点「本周」回到当前周"></div>
   </div>
 
-  <!-- 工具带 B · 功能带：新增 / 对比 / 主题 / 设置 + 课程统计。单行横滑 -->
+  <!-- 工具带 B · 功能带：新增 / 周数下拉(仅日视图) / 对比 / 设置。单行横滑 -->
   <div class="toolbar strip strip-act" data-page-node-id="fkpD1qC3r30BFVaYY5JUKl">
     <button class="btn primary" id="btnAdd" data-page-node-id="Q6zzGB9BzaI5jjNEGGOW0E"><span data-page-node-id="9D124BHuBfa7yoZ7XeDvui">＋</span><span class="t" data-page-node-id="6ZFgUzivJXGEEbAWhbPy3l">新增课程</span></button>
+    <span class="week-sel" id="weekSel" style="display:none" title="选择第几周（仅日视图显示；选「本周」回到当前周）">
+      <span class="ws-ic">📅</span>
+      <select id="weekSelect" aria-label="选择周数"></select>
+      <span class="ws-caret">▾</span>
+    </span>
     <button class="btn icon" id="btnCompare" title="多人课表叠加对比：找共同空闲 / 谁有课" data-page-node-id="d9cmp">🔀</button>
     <button class="btn icon" id="btnSet" title="设置" data-page-node-id="DX6T06X896HGobXyGnBFHb">⚙️</button>
   </div>
@@ -1061,15 +1079,25 @@ function renderChips(){
   }
 }
 
-/* 周次条：只在开启按周过滤时显示；展示当前/预览周，可切换周 */
+/* 周次条：只在开启按周过滤时显示；展示当前/预览周，可切换周。
+   日视图改为在功能带（新增课程旁）放下拉选周，顶栏不再单独占用一行。 */
 function renderWeek(){
   const bar = $('#weekBar'); if (!bar) return;
   const S = state.settings;
   const rw = realWeek();                 // 真实本周（可能 null=未开学/关闭）
   const wk = viewWeek();                 // 实际过滤周（null=全部）
-  if (!S.weekFilter || !S.termStart){
-    /* 关闭按周或未设开学周：整条隐藏，把顶栏宽度让给日期选择（周一~周日）。
-       开启入口仍在「设置 → 按周上课」，功能不丢。 */
+  const active = !!(S.weekFilter && S.termStart);
+
+  if (ui.view === 'day'){
+    /* 日视图：周数选择收敛到功能带下拉 #weekSel，顶栏周次条整条隐藏，把宽度让给星期 chips */
+    renderWeekSelect(S, rw, wk, active);
+    bar.classList.remove('on');
+    bar.innerHTML = '';
+    return;
+  }
+  /* 非日视图：隐藏功能带下拉，顶栏周次条按原逻辑显示 */
+  const selWrap = $('#weekSel'); if (selWrap) selWrap.style.display = 'none';
+  if (!active){
     bar.classList.remove('on');
     bar.innerHTML = '';
     return;
@@ -1083,6 +1111,24 @@ function renderWeek(){
     `<span class="wbl">${label}<b>${wk != null ? wk : '?'}</b><em>/ ${total} 周</em></span>` +
     `<button class="wb" data-w="inc" title="下一周">›</button>` +
     (previewing ? `<button class="wbh" data-w="today" title="回到当前周">本周</button>` : '');
+}
+
+/* 填充功能带"周数下拉"（日视图用）。active=false 时隐藏；否则列出「本周」+第1..N周并选中当前周 */
+function renderWeekSelect(S, rw, wk, active){
+  const wrap = $('#weekSel'); if (!wrap) return;
+  if (!active || !S.termStart){ wrap.style.display = 'none'; return; }
+  const total = S.totalWeeks;
+  const sel = $('#weekSelect'); if (!sel) return;
+  const previewing = ui.viewWeek != null;
+  const target = previewing ? wk : rw;      // 预览→选预览周；否则停在「本周」
+  let html = rw != null
+    ? `<option value="this">本周（第 ${rw} 周）</option>`
+    : `<option value="this">本周</option>`;
+  for (let i = 1; i <= total; i++)
+    html += `<option value="${i}">第 ${i} 周</option>`;
+  sel.innerHTML = html;
+  sel.value = (previewing && target != null) ? String(target) : 'this';
+  wrap.style.display = 'inline-flex';
 }
 
 /* 计算每个时间段的列位置（处理重叠并排） */
@@ -2932,6 +2978,14 @@ $('#weekBar').onclick = e => {
 };
 $('#btnAdd').onclick = () => openEditor(null);
 $('#fab').onclick = () => openEditor(null);
+/* 功能带"周数下拉"（日视图）：选具体周→预览该周；选「本周」→回到当前周 */
+$('#weekSelect').onchange = e => {
+  const v = e.target.value;
+  const S = state.settings;
+  if (v === 'this'){ ui.viewWeek = null; }
+  else { ui.viewWeek = clamp(parseInt(v, 10) || 1, 1, S.totalWeeks); }
+  render();
+};
 $('#btnPerson').onclick = openPersonManager;
 $('#btnSet').onclick = openSettings;
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -3572,7 +3626,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.6';
+const APP_VERSION = '2026.09.09.7';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
