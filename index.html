@@ -887,18 +887,8 @@ function defaults(){
   };
 }
 function seed(){
-  const s = defaults();
-  const mk = (name, teacher, color, sessions) => ({
-    id: uid(), name, teacher, color, note:'',
-    sessions: sessions.map(x => ({ id: uid(), day: x[0], start: x[1], end: x[2], location: x[3], weeks: null }))
-  });
-  s.people[0].courses = [
-    mk('高等数学', '张老师', '#4f7cff', [[1, 480, 565, '教三-301'], [3, 480, 565, '教三-301']]),
-    mk('大学英语', '李老师', '#e0568c', [[2, 600, 685, '外语楼-204'], [4, 600, 685, '外语楼-204']]),
-    mk('数据结构', '王老师', '#2fb37a', [[1, 840, 1005, '信息楼-A102']]),
-    mk('体育',     '陈老师', '#f59f3c', [[5, 840, 925, '田径场']]),
-  ];
-  return s;
+  // 首次打开 / 本地数据损坏时，返回一个空的默认课表（不含任何示例课程）
+  return defaults();
 }
 
 /* ------------------------- 多人课表 -------------------------
@@ -3657,7 +3647,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.9';
+const APP_VERSION = '2026.09.09.10';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
