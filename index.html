@@ -23,6 +23,16 @@
     try { info = JSON.parse(localStorage.getItem('course-app-upd') || '{}'); } catch(e){}
     var ok   = localStorage.getItem('course-app-ok') || '';
     var pend = localStorage.getItem('course-app-pending') || '';
+    /* 已知有缺陷的版本：用户已下载但会被引导脚本写坏。命中后直接丢弃缓存回退内置版。
+       v.7: 引导脚本 'replace' 注入看门狗时，反斜杠转义后 document.write 输出真实
+       结束标签，导致 HTML 解析器提前闭合 script 块，body 出现裸 JS 文本。 */
+    var BROKEN_VERSIONS = { '2026.09.09.7': 1 };
+    if (info.version && BROKEN_VERSIONS[info.version]) {
+      localStorage.removeItem('course-app-hot-html');
+      localStorage.removeItem('course-app-upd');
+      localStorage.removeItem('course-app-pending');
+      return;
+    }
     if (pend && pend !== ok){
       /* 上次新版未能完成启动：丢弃缓存，强制回退到内置版并硬刷新，避免卡在坏版本 */
       localStorage.removeItem('course-app-hot-html');
@@ -38,19 +48,22 @@
       if (window.__hotLoaded) return;
       window.__hotLoaded = 1;
       /* 自愈看门狗：新页面若没在 8s 内完成启动（主脚本跑完会清除该标记），
-         说明替换后的页面脚本异常，立即丢弃并回退到内置版本，不让用户卡在坏页面。
-         注意：document.write 会覆盖整个文档，此计时器须在新文档已建立后注入才有效，
-         故把它写进替换文本首部。 */
-      var guardHtml = html.replace('<body',
-        '<script>setTimeout(function(){' +
+         说明替换后的页面脚本异常，立即丢弃并回退到内置版本。
+         v.7 坑：document.write 输出字面结束标签会让 HTML 解析器提前闭合 script 块，
+         后续所有 ' + ' 字面量直接成为 body 文本。正确做法：拼接字符串，不让源代码里
+         出现结束标签完整序列。 */
+      var guardScript = '<script>setTimeout(function(){' +
         'if(document.getElementById("__upd_ok")===null){' +
         'try{localStorage.removeItem("course-app-hot-html");' +
         'localStorage.removeItem("course-app-upd");' +
         'localStorage.removeItem("course-app-pending");}catch(e){}' +
         'location.replace(location.href);' +
-        '}},8000);<\/script><body');
+        '}},8000);<' + '/script>';
       try {
-        document.open(); document.write(guardHtml); document.close();
+        document.open();
+        document.write(guardScript);   /* 先 write 看门狗（新文档 head 首段） */
+        document.write(html);          /* 再 write 主文档（head 解析完毕后自然衔接 body） */
+        document.close();
       } catch (e) {
         try { var s = document.getElementById('hot-hide'); if (s) s.parentNode.removeChild(s); } catch (e2) {}
       }
@@ -3626,7 +3639,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.7';
+const APP_VERSION = '2026.09.09.8';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
