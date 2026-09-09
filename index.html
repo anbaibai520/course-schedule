@@ -533,8 +533,8 @@ button{cursor:pointer;border:0;background:none}
   .seg{padding:2px;flex:0 0 auto}
   .seg button{padding:6px 10px;min-height:34px;white-space:nowrap;font-size:12px;flex:0 0 auto}
   /* "新增课程"主按钮：保留文字标签，更易点；fab 隐藏避免重复 */
-  #btnAdd,#btnAddPerson{padding:7px 11px;min-height:36px;font-size:12.5px;flex:0 0 auto}
-  #btnAdd .t,#btnAddPerson .t{display:inline;margin-left:3px}
+  #btnAdd{padding:7px 11px;min-height:36px;font-size:12.5px;flex:0 0 auto}
+  #btnAdd .t{display:inline;margin-left:3px}
   .fab{display:none}
   .scroll{padding:8px 8px calc(88px + env(safe-area-inset-bottom))}
   .fab{width:50px;height:50px;right:calc(14px + env(safe-area-inset-right));bottom:calc(18px + env(safe-area-inset-bottom));font-size:22px}
@@ -607,9 +607,7 @@ button{cursor:pointer;border:0;background:none}
   <div class="toolbar strip strip-act" data-page-node-id="fkpD1qC3r30BFVaYY5JUKl">
     <button class="btn primary" id="btnAdd" data-page-node-id="Q6zzGB9BzaI5jjNEGGOW0E"><span data-page-node-id="9D124BHuBfa7yoZ7XeDvui">＋</span><span class="t" data-page-node-id="6ZFgUzivJXGEEbAWhbPy3l">新增课程</span></button>
     <button class="btn icon" id="btnCompare" title="多人课表叠加对比：找共同空闲 / 谁有课" data-page-node-id="d9cmp">🔀</button>
-    <button class="btn" id="btnAddPerson" title="新建一份课表，可以放自己或同学的课表"><span>＋</span><span class="t">课表</span></button>
     <button class="btn icon" id="btnSet" title="设置" data-page-node-id="DX6T06X896HGobXyGnBFHb">⚙️</button>
-    <div class="meta" id="meta" data-page-node-id="HjdYoQLbApRMuHirw7imX9"></div>
   </div>
 
   <div class="scroll" id="scroll" data-page-node-id="YRnad80hDYwBK5tE5ppSS4">
@@ -985,7 +983,6 @@ function render(){
   renderWeek();
   renderPerson();
   if (ui.view === 'list') renderList(); else renderBoard();
-  renderMeta();
   /* 工具带 B 跟随 topbar 高度：渲染后重测（天数 chips/周数变化可能让 topbar 高度变化） */
   syncTopbarH();
 }
@@ -1031,13 +1028,6 @@ function renderWeek(){
     `<span class="wbl">${label}<b>${wk != null ? wk : '?'}</b><em>/ ${total} 周</em></span>` +
     `<button class="wb" data-w="inc" title="下一周">›</button>` +
     (previewing ? `<button class="wbh" data-w="today" title="回到当前周">本周</button>` : '');
-}
-
-function renderMeta(){
-  const n = state.courses.length;
-  const t = state.courses.reduce((a, c) => a + c.sessions.length, 0);
-  const mins = state.courses.reduce((a, c) => a + c.sessions.reduce((x, s) => x + (s.end - s.start), 0), 0);
-  $('#meta').textContent = `${n} 门课程 · ${t} 个时间段 · 每周 ${(mins / 60).toFixed(1)} 课时`;
 }
 
 /* 计算每个时间段的列位置（处理重叠并排） */
@@ -1814,22 +1804,6 @@ async function removePerson(id){
   if (state.activeId === id) state.activeId = state.people[Math.min(i, state.people.length - 1)].id;
   save(); render(); toast('已删除「' + p.name + '」');
 }
-/* 工具栏「新建课表」：先起名字再建，避免建出一堆同名「新建课表」 */
-function openAddPerson(){
-  openModal('新建课表',
-    `<div class="hint" style="margin-bottom:10px">给课表起个名字，比如「我的大一上」「室友小李」。新建后会自动切换过去。</div>
-     <input class="inp" id="apName" maxlength="20" placeholder="课表名称" autocomplete="off" style="width:100%">`,
-    `<button class="btn" data-close>取消</button><button class="btn primary" id="apOk">创建</button>`);
-  const doAdd = () => {
-    const v = String($('#apName').value || '').trim();
-    if (!v) { $('#apName').focus(); return; }
-    addPerson(v); closeModal(); toast('已新建并切换到「' + v + '」');
-  };
-  $('#apOk').onclick = doAdd;
-  $('#apName').onkeydown = e => { if (e.key === 'Enter') doAdd(); };
-  setTimeout(() => { const el = $('#apName'); if (el) el.focus(); }, 60);
-}
-
 function openPersonManager(){
   const rows = state.people.map((p, i) => `
     <div class="prow ${p.id === state.activeId ? 'cur' : ''}" data-pid="${p.id}" title="点击切换到这份课表">
@@ -2877,7 +2851,6 @@ $('#btnAdd').onclick = () => openEditor(null);
 $('#fab').onclick = () => openEditor(null);
 $('#btnPerson').onclick = openPersonManager;
 $('#btnSet').onclick = openSettings;
-$('#btnAddPerson').onclick = openAddPerson;
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if (state.settings.theme === 'auto') applyTheme();
 });
@@ -3508,7 +3481,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.3';
+const APP_VERSION = '2026.09.09.4';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
