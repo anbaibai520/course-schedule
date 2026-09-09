@@ -3508,7 +3508,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.2';
+const APP_VERSION = '2026.09.09.3';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
@@ -3560,8 +3560,23 @@ try { localStorage.setItem(UPD_LS_OK, APP_VERSION); } catch(e){}
 <!-- 注册 Service Worker：使 PWA 可离线使用、可安装到主屏/桌面 -->
 <script>
 if ('serviceWorker' in navigator) {
+  /* 本次打开前是否已被 SW 接管：首次安装时为 false，用来避免首次访问白刷新一次 */
+  var hadSW = !!navigator.serviceWorker.controller;
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw.js').catch(function () {});
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+      /* 主动查一次更新，不等浏览器自己的节奏（否则可能隔天才换新版） */
+      if (reg && reg.update) { try { reg.update(); } catch (e) {} }
+    }).catch(function () {});
+
+    /* 新 SW 接管后刷新一次，让新页面立刻生效；用 sessionStorage 防止同一会话反复刷新 */
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!hadSW) return;
+      try {
+        if (sessionStorage.getItem('sw-reloaded') === '1') return;
+        sessionStorage.setItem('sw-reloaded', '1');
+      } catch (e) {}
+      location.reload();
+    });
   });
 }
 </script>
