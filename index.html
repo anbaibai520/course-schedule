@@ -896,10 +896,19 @@ function weekOfToday(termStart){
   if (diff < 0) return null;                                 // 还没开学
   return Math.floor(diff / 7) + 1;
 }
-/* 规范化 session.weeks → null 或 {f,t,p}（含周期 0每/1单/2双） */
+/* 规范化 session.weeks → null 或 {f,t,p}（含周期 0每/1单/2双）
+   注意：**字符串周次（"1-16" / "单周"）也必须能解析**——早先只读 w.f/w.t，
+   遇到字符串会整体塌成"第 1 周"，等于把这门课其余周次静默吃掉（看着像"没导入"）。
+   这里复用 impWeeks 的文本解析能力（同为 IIFE 内顶层函数声明，可安全调用）。 */
 function normWeeks(w, total){
   const T = Math.max(1, +total || 20);
   if (w == null) return null;
+  if (typeof w === 'string' || typeof w === 'number'){
+    const s = String(w).trim();
+    if (!s || /^(null|每周|全周|整学期|all)$/i.test(s)) return null;   // 空/每周 → 不限制
+    return impWeeks(s, T);
+  }
+  if (typeof w !== 'object') return null;
   const f = Math.round(+w.f || w.from || 1);
   const t = Math.round(+w.t || w.to || f);
   const p = [0, 1, 2].includes(+w.p) ? +w.p : 0;
@@ -991,7 +1000,9 @@ function normalize(o){
   s.termStart = /^\d{4}-\d{2}-\d{2}$/.test(String(s.termStart || '')) ? String(s.termStart)
                 : (parseDay(s.termStart) ? isoDay(parseDay(s.termStart)) : d.settings.termStart);
   s.weekFilter = s.weekFilter !== false;
-  /* 单份课表的课程清洗 + 排序（供各处复用） */
+  /* 单份课表的课程清洗 + 排序（供各处复用）。
+     末尾丢弃「没有任何时间段」的课程：这种课在界面上既显示不出、也点不开，
+     纯粹是看不见的脏数据（旧版导入缺陷就会造出这种课），顺带自愈历史脏数据。 */
   const normCourses = list => (Array.isArray(list) ? list : []).map(c => ({
     id: c.id || uid(),
     name: String(c.name || '未命名课程'),
@@ -1006,7 +1017,7 @@ function normalize(o){
       location: String(x.location || ''),
       weeks: normWeeks(x.weeks, s.totalWeeks)
     })).filter(x => x.end > x.start))
-  }));
+  })).filter(c => c.sessions.length);
 
   let people = [];
   if (Array.isArray(o.people) && o.people.length) {
@@ -2225,6 +2236,10 @@ function exportJSON(){
   toast('备份已导出');
 }
 function openIO(){
+  const u = impUndoInfo();
+  const uTime = u ? new Date(u.at) : null;
+  const uLabel = uTime ? (u.tag || '上次导入') + ' · '
+      + ('0' + uTime.getHours()).slice(-2) + ':' + ('0' + uTime.getMinutes()).slice(-2) : '';
   openModal('备份与恢复',
     `<div class="hint" style="margin-bottom:14px">
        数据保存在本机浏览器（localStorage），换设备或重装浏览器前，建议导出 JSON 备份；
@@ -2235,11 +2250,15 @@ function openIO(){
      <div class="setrow"><div class="lb">导入恢复<small>从 .json 文件读取</small></div>
        <button class="btn" id="ioImp">选择文件</button></div>
      <div class="setrow"><div class="lb">导出图片<small>保存当前视图为 PNG</small></div>
-       <button class="btn" id="ioImg">导出 PNG</button></div>`,
+       <button class="btn" id="ioImg">导出 PNG</button></div>
+     ${u ? `<div class="setrow" id="ioUndoRow"><div class="lb">恢复导入前的数据<small>${esc(uLabel)} 的自动快照（覆盖类导入前留存）</small></div>
+       <button class="btn" id="ioUndo">恢复</button></div>` : ''}`,
     `<div class="spacer"></div><button class="btn" data-close>关闭</button>`);
   $('#ioExp').onclick = exportJSON;
   $('#ioImg').onclick = () => { closeModal(); exportPNG(); };
   $('#ioImp').onclick = () => $('#fileIn').click();
+  const iu = $('#ioUndo');
+  if (iu) iu.onclick = () => { closeModal(); setTimeout(() => impUndoImport(), 60); };
 }
 
 $('#fileIn').addEventListener('change', async e => {
@@ -2483,14 +2502,33 @@ function impParseICS(text, total){
 }
 
 /* ---------- 来源自动识别 ---------- */
+/* 去掉 markdown 围栏与 BOM：从聊天窗口复制 AI 结果时几乎都会带上 ```json */
+function impStripFence(v){
+  return String(v == null ? '' : v)
+    .replace(/^\uFEFF/, '')
+    .replace(/^\s*```[a-zA-Z]*[ \t]*\r?\n?/, '')
+    .replace(/\r?\n?\s*```\s*$/, '')
+    .trim();
+}
 function impDetect(text, filename, total){
-  const t = String(text || '').replace(/^\uFEFF/, '');
+  const t = impStripFence(text);
   const fn = String(filename || '').toLowerCase();
-  if (!t.trim()) throw new Error('内容为空');
-  if (fn.endsWith('.json') || /^\s*[\[{]/.test(t)){
-    const obj = JSON.parse(t);
-    const n = normalize(Array.isArray(obj) ? { courses: obj } : obj);
-    return { kind: 'json', people: n.people };
+  if (!t) throw new Error('内容为空');
+  if (fn.endsWith('.json') || /^[\[{]/.test(t)){
+    let obj;
+    try { obj = JSON.parse(t); }
+    catch (e){ throw new Error('JSON 格式有误：' + ((e && e.message) || e)); }
+    /* 只有「本应用的整份备份」（含 people 数组）才交给 normalize；
+       其余一律按统一中转格式解析 —— 两者模型不同，混用必出事。
+       旧版把 {courses:[{day,start,end,…}]} 这类「扁平」记录也丢给 normalize，
+       而 normalize 只认嵌套的 sessions 字段 → 每门课都成了"没有时间段"的空壳，
+       于是弹出"已导入 N 门课程"，课表上却什么都没有（本次报告的问题）。 */
+    if (obj && typeof obj === 'object' && !Array.isArray(obj) && Array.isArray(obj.people)){
+      const n = normalize(obj);
+      return { kind: 'json', people: n.people };
+    }
+    const r = impParseUnified(t, total);
+    return { kind: 'unified', courses: r.courses, warnings: r.warnings };
   }
   if (fn.endsWith('.ics') || /BEGIN:VCALENDAR/i.test(t)){
     const r = impParseICS(t, total);
@@ -2537,22 +2575,32 @@ function impParseUnified(text, total){
 }
 
 /* ---------- 落到课表 ---------- */
-/* mode: append 追加到当前课表 | replace 覆盖当前课表 | new 新建一份课表 */
+/* mode: append 追加到当前课表 | replace 覆盖当前课表 | new 新建一份课表
+   返回**实际入库的课程数**：没有时间段的课程不入库也不计数，
+   否则会出现"提示成功、课表却没变"（调用方据此判断成败）。 */
 function impCommit(courses, mode, newName){
-  const list = normalize({ courses }).courses;
+  const list = normalize({ courses }).courses.filter(c => c.sessions.length);
   if (!list.length) return 0;
-  if (mode === 'replace') state.courses = list;
+  if (mode === 'replace'){ impStash('覆盖当前课表'); state.courses = list; }
   else if (mode === 'new'){ const p = addPerson(newName || '导入课表'); p.courses = list; }
   else state.courses = state.courses.concat(list);
   save(); render();
   return list.length;
 }
+/* 统计一份课程集合里真实可用的门数与时间段数（用于确认框与结果提示） */
+function impCount(courses){
+  const n = (courses || []).filter(c => c && c.sessions && c.sessions.length);
+  return { n: n.length, s: n.reduce((a, c) => a + c.sessions.length, 0) };
+}
 /* JSON 备份：按「整份课表」粒度导入 */
 function impCommitPeople(people, mode){
-  const inc = normalize({ people }).people;
-  if (!inc.length) return { p: 0, c: 0 };
+  const inc = normalize({ people }).people.map(p => ({
+    id: p.id, name: p.name, courses: p.courses.filter(c => c.sessions.length)
+  }));
   const nC = inc.reduce((a, x) => a + x.courses.length, 0);
+  if (!nC) return { p: 0, c: 0 };      // 一份可用课表都没有 → 不提交，由调用方报错
   if (mode === 'replace'){
+    impStash('覆盖整份备份');
     state.people = inc.map(p => ({ id: p.id, name: p.name, courses: p.courses }));
     state.activeId = state.people[0].id;
   } else {
@@ -2561,6 +2609,42 @@ function impCommitPeople(people, mode){
   }
   save(); render();
   return { p: inc.length, c: nC };
+}
+
+/* ---------- 导入前置快照：给"覆盖"类导入留一次后悔药 ----------
+   「覆盖」是不可逆操作，而导入解析一旦出错（格式不兼容、AI 吐了半截）
+   用户的课表就没了。这里在覆盖前把当前数据整份存到 localStorage，
+   设置 → 数据 里出现「恢复导入前的数据」，用完即清。 */
+const UNDO_LS = 'course-schedule-undo-v1';
+function impStash(tag){
+  try {
+    if (!state.people.reduce((a, p) => a + p.courses.length, 0)) return;   // 本来就空，无需快照
+    localStorage.setItem(UNDO_LS, JSON.stringify({
+      at: Date.now(), tag: tag || '', state: JSON.parse(JSON.stringify(state))
+    }));
+  } catch (e){ console.warn('导入快照写入失败', e); }
+}
+function impUndoInfo(){
+  try {
+    const o = JSON.parse(localStorage.getItem(UNDO_LS) || 'null');
+    return (o && o.state && Array.isArray(o.state.people)) ? o : null;
+  } catch (e){ return null; }
+}
+async function impUndoImport(){
+  const o = impUndoInfo();
+  if (!o){ toast('没有可恢复的数据'); return; }
+  const nC = o.state.people.reduce((a, p) => a + (p.courses || []).length, 0);
+  const when = new Date(o.at);
+  const hhmm = ('0' + when.getHours()).slice(-2) + ':' + ('0' + when.getMinutes()).slice(-2);
+  const r = await askModal('恢复导入前的数据',
+    `将丢弃当前课表，恢复为「${o.tag || '上次导入'}」之前的 <b>${o.state.people.length}</b> 份课表、共 <b>${nC}</b> 门课程（快照时间 ${hhmm}）。<br><br>
+     快照只能恢复一次，恢复后即清除。`,
+    [{ label: '取消', value: 'no' }, { label: '恢复', value: 'yes', cls: 'primary' }]);
+  if (r !== 'yes') return;
+  state = normalize(o.state);
+  try { localStorage.removeItem(UNDO_LS); } catch (e){}
+  save(); render(); closeModal();
+  toast('已恢复导入前的 ' + nC + ' 门课程');
 }
 
 /* =====================================================================
@@ -2792,10 +2876,13 @@ function aiResultDialog(res, onRetry){
   const commit = mode => {
     const r = stat();
     if (!r){ toast('请先修正 JSON 格式'); return; }
-    if (!r.courses.length){ toast('没有可导入的课程'); return; }
-    const n = impCommit(r.courses, mode);
+    const courses = (r.courses || []).filter(c => c && c.sessions && c.sessions.length);
+    if (!courses.length){ toast('没有可导入的课程（缺少时间段）'); return; }
+    const cnt = impCount(courses);
+    const n = impCommit(courses, mode);
     closeModal();
-    toast(mode === 'new' ? ('已新建一份课表，导入 ' + n + ' 门') : ('已导入 ' + n + ' 门课程'));
+    if (!n){ toast('导入失败：没有可用的时间段'); return; }
+    toast((mode === 'new' ? '已新建一份课表，导入 ' : '已导入 ') + n + ' 门课程 · ' + cnt.s + ' 个时间段');
   };
   $('#aiBack').onclick    = () => { if (onRetry) onRetry(); else closeModal(); };
   $('#aiNew').onclick     = () => commit('new');
@@ -2977,9 +3064,16 @@ function openImport(startTab){
 
   /* 预览 + 合并/覆盖/新建 */
   const finish = async res => {
-    const courses = res.courses || [];
-    if (!courses.length){ impSay((res.warnings && res.warnings.join('；')) || '没有解析到课程', true); return; }
-    const nS = courses.reduce((a, c) => a + c.sessions.length, 0);
+    /* 只把「真有时间段」的课程带进确认框：解析结果本身残缺时，宁可当场报错，
+       也不能走完流程弹个"成功"却什么都没入库（用户根本无法察觉） */
+    const courses = (res.courses || []).filter(c => c && c.sessions && c.sessions.length);
+    if (!courses.length){
+      const why = (res.warnings && res.warnings.length) ? res.warnings.join('；') : '没有解析到课程';
+      impSay(why, true);
+      return;
+    }
+    const cnt = impCount(courses);
+    const nS = cnt.s;
     const prev = courses.slice(0, 6).map(c => {
       const s = c.sessions[0] || {};
       return '· ' + (DAY_NAMES[s.day] || '') + ' ' + fmt(s.start) + '-' + fmt(s.end) + '  ' + c.name + (s.location ? ' @ ' + s.location : '');
@@ -2992,19 +3086,31 @@ function openImport(startTab){
     if (!r || r === 'no') return;
     const n = impCommit(courses, r);
     closeModal();
-    toast('已导入 ' + n + ' 门课程');
+    if (!n){ toast('导入失败：没有可用的时间段'); return; }
+    toast('已导入 ' + n + ' 门课程 · ' + nS + ' 个时间段');
   };
   /* JSON 备份：按整份课表导入 */
   const finishPeople = async res => {
-    const ps = res.people || [];
-    const nC = ps.reduce((a, p) => a + p.courses.length, 0);
-    if (!nC){ impSay('文件里没有课程数据', true); return; }
+    const raw = res.people || [];
+    const ps = raw.map(p => Object.assign({}, p, {
+      courses: (p.courses || []).filter(c => c && c.sessions && c.sessions.length)
+    }));
+    const cnt = impCount(ps.reduce((a, p) => a.concat(p.courses), []));
+    if (!cnt.n){
+      const rawC = raw.reduce((a, p) => a + (p.courses || []).length, 0);
+      const rawS = raw.reduce((a, p) => a + (p.courses || []).reduce((b, c) => b + ((c.sessions || []).length), 0), 0);
+      impSay(rawC
+        ? ('解析到 ' + rawC + ' 条课程记录，但一个时间段都没有（共 ' + rawS + ' 个），未导入任何课程：请检查内容的格式')
+        : '文件里没有课程数据', true);
+      return;
+    }
     const r = await askModal('确认导入',
-      '文件包含 <b>' + ps.length + '</b> 份课表、共 <b>' + nC + '</b> 门课程。',
+      '文件包含 <b>' + ps.length + '</b> 份课表、共 <b>' + cnt.n + '</b> 门课程、<b>' + cnt.s + '</b> 个时间段。',
       [{ label: '取消', value: 'no' }, { label: '合并', value: 'merge' }, { label: '覆盖', value: 'replace', cls: 'primary' }]);
     if (!r || r === 'no') return;
     const got = impCommitPeople(ps, r);
     closeModal();
+    if (!got.c){ toast('导入失败：没有可用的时间段'); return; }
     toast('已导入 ' + got.p + ' 份课表 · ' + got.c + ' 门课程');
   };
 
@@ -4839,6 +4945,12 @@ window.CourseSchedule = {
     platforms: AI_LIST_PLATFORMS,
     copy: copyText
   },
+  /* 导入：解析器 + 覆盖类导入的一次性撤销快照 */
+  import: {
+    detect: impDetect, parseUnified: impParseUnified, parseTable: impParseTable, parseICS: impParseICS,
+    commit: impCommit, commitPeople: impCommitPeople, count: impCount, stripFence: impStripFence,
+    undoInfo: impUndoInfo, undo: impUndoImport
+  },
   /* 天气 */
   weather: {
     get: () => JSON.parse(JSON.stringify(weather)),
@@ -4879,7 +4991,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.17.16';
+const APP_VERSION = '2026.09.17.17';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
