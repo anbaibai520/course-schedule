@@ -393,20 +393,36 @@ button{cursor:pointer;border:0;background:none}
 .col.weekend:hover{background:color-mix(in srgb,var(--accent) 9%,var(--weekend))}
 
 /* ============ 课程块 ============ */
+/* 排版规则（2026-09-17 重做）
+   手机上一列只有 ~70px，而课名常是 "PSP002TC-Lecture" 这类长串。
+   旧版固定 13px 字号 + word-break:break-all，把单词拦腰截断成
+   "C-Lectur / ure" 这种碎片；时间 "11:00 - 12:50" 还会折成两行，
+   结果是几乎每个块的内容都溢出，关键信息被裁掉。
+   现在：字号随列宽自适应（--fs 由 renderBoard 按列宽算好注入）、
+        时间永远单行、课名只在空格/连字符处断行、行数（--lp）按块高夹紧，
+        高度不足时优先牺牲「地点」「时间」，课名永远保留。 */
 .blk{
-  position:absolute;overflow:hidden;border-radius:9px;padding:4px 7px;
-  background:var(--c);color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.18);
+  --fs:12.5px;
+  position:absolute;overflow:hidden;border-radius:8px;padding:4px 4px;
+  background:var(--c);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.16);
   cursor:pointer;touch-action:manipulation;user-select:none;
   border:1px solid rgba(255,255,255,.22);
+  display:flex;flex-direction:column;justify-content:center;gap:2px;
   transition:box-shadow .15s,filter .15s;
+  text-shadow:0 1px 1px rgba(0,0,0,.22);   /* 饱和底色上白字更实一点 */
 }
 .blk:hover{filter:brightness(1.06);box-shadow:0 4px 14px rgba(0,0,0,.22);z-index:5}
 .blk:active{filter:brightness(.94)}
-.blk .bt{font-size:10.5px;opacity:.88;font-variant-numeric:tabular-nums;line-height:1.3}
-.blk .bn{font-size:13px;font-weight:700;line-height:1.28;margin-top:1px;word-break:break-all}
-.blk .bm{font-size:10.5px;opacity:.9;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.blk.mini .bn{font-size:11.5px}
-.blk.mini .bm,.blk.mini .bt{display:none}
+/* 时间：单行不折行，比课名小一档；放不下时由 renderBoard 整行不渲染 */
+.blk .bt{font-size:calc(var(--fs) - 1.5px);opacity:.86;font-variant-numeric:tabular-nums;
+  line-height:1.12;white-space:nowrap;overflow:hidden;letter-spacing:-.1px;flex:none}
+/* 课名：占满剩余高度；断行只发生在空格/连字符处；超出 --lp 行即省略 */
+.blk .bn{font-size:var(--fs);font-weight:700;line-height:1.22;min-height:0;
+  overflow-wrap:break-word;word-break:normal;
+  display:-webkit-box;-webkit-line-clamp:var(--lp,3);-webkit-box-orient:vertical;overflow:hidden}
+/* 老师 · 地点：贴底单行省略 */
+.blk .bm{font-size:calc(var(--fs) - 1.5px);opacity:.82;line-height:1.12;flex:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nowline{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--now);z-index:15;pointer-events:none}
 .nowline::before{
   content:"";position:absolute;left:-4px;top:-5px;width:8px;height:8px;border-radius:50%;background:var(--now);
@@ -639,13 +655,12 @@ button{cursor:pointer;border:0;background:none}
   .tcol .opts{padding:38px 0}
   .srow-tm .to{height:104px}
   .shead{display:none}
-  .blk .bn{font-size:12.5px}
-  .blk .bt{font-size:10px}
-  .blk .bm{font-size:11px}
+  /* 课程块字号不再在媒体查询里写死：改由 renderBoard 按实际列宽算 --fs。
+     写死会出现「屏越窄、字越大、课名被挤断」的怪象（旧版 12.5px 就是这么断的）。 */
   .chips{min-height:34px;gap:4px}
   :root{--gutter:36px}
-  /* 让课程块在小屏更紧凑可读 */
-  .blk{padding:3px 6px;border-radius:8px}
+  /* 小屏块内边距再收紧一点，把宽度让给文字 */
+  .blk{padding:4px 4px;border-radius:7px}
   /* 列表视图头不挤 */
   .dhead{padding:9px 12px;gap:8px}
   .dname{font-size:13.5px}
@@ -853,6 +868,16 @@ const DAY_FULL  = ['', '星期一', '星期二', '星期三', '星期四', '星�
 const PALETTE = ['#4f7cff','#7c5cff','#e0568c','#ef5f5f','#f59f3c','#e0b62a',
                  '#2fb37a','#12b3b3','#3a9fd6','#8a94a6','#c2410c','#0f766e'];
 
+/* 按课名派生一个稳定的颜色（同名课永远同色）。
+   导入的课以前一律落成 PALETTE[0]，一屏全是同一个蓝，扫一眼分不清哪节是哪门课——
+   在窄屏小块里这是可读性的另一半杀手。 */
+function autoColor(name){
+  const s = String(name || '未命名');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 131 + s.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+
 /* ------------------------- 工具函数 ------------------------- */
 const $  = (s, r = document) => r.querySelector(s);
 const pad = n => String(n).padStart(2, '0');
@@ -1008,7 +1033,7 @@ function normalize(o){
     name: String(c.name || '未命名课程'),
     teacher: String(c.teacher || ''),
     note: String(c.note || ''),
-    color: /^#[0-9a-f]{6}$/i.test(c.color || '') ? c.color : PALETTE[0],
+    color: /^#[0-9a-f]{6}$/i.test(c.color || '') ? c.color : autoColor(c.name),
     sessions: sortSessions((Array.isArray(c.sessions) ? c.sessions : []).map(x => ({
       id: x.id || uid(),
       day: clamp(+x.day || 1, 1, 7),
@@ -1326,12 +1351,50 @@ function layout(days){
   return out;
 }
 
+/* ---------- 课程块排版：字号 / 行数自适应 ----------
+   窄屏一周铺 5~7 列时，一列只有 60~75px；而课名常是 "PSP002TC-Lecture"
+   这类长串。字号必须跟着列宽走 —— 否则只会得到「屏越窄、字越大、
+   名字被拦腰截断」的结果。 */
+function boardColWidth(n){
+  /* 基准取「根元素宽度」，不要用 #scroll.clientWidth / #board.clientWidth：
+     这两个在滚动条出现时会少掉滚动条的宽度（桌面测试环境差 10px），
+     会让字号被算小一档。往下减掉 #scroll 的左右内边距、#board 的左右边框和时间刻度栏。 */
+  const sc = $('#scroll'), board = $('#board'), root = document.documentElement;
+  const g = parseFloat(getComputedStyle(root).getPropertyValue('--gutter')) || 58;
+  let pad = 0, bd = 0;
+  if (sc){ const cs = getComputedStyle(sc); pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0); }
+  if (board){ const bs = getComputedStyle(board); bd = (parseFloat(bs.borderLeftWidth) || 0) + (parseFloat(bs.borderRightWidth) || 0); }
+  const rootW = root.clientWidth || window.innerWidth || 360;
+  return Math.max(24, (rootW - pad - bd - g) / Math.max(1, n));
+}
+/* 文字可用宽度 → 字号：5.6 是「一行约放得下 5~6 个西文字符宽度」的经验值。
+   刻意取偏小的字号：宁可两行把课名完整排下，也不要大字号把
+   "EAP043 Seminar-D" 挤成 "…Seminar-" + 孤零零一个 "D"。 */
+function blkFont(textW){
+  return clamp(Math.round(textW / 5.6 * 2) / 2, 9.5, 16);
+}
+/* 块高 → 该显示哪些行：容量不足时依次牺牲「地点」「时间」，课名永远保留。
+   常量与 .blk 的 padding(上下共 8px)、gap(2px)、line-height 对齐。 */
+function blkLayout(h, fs, hasLoc){
+  const PAD = 8, GAP = 2;
+  const t  = fs * 0.86 + GAP;     // 时间行（含间距）
+  const m  = fs * 0.86 + GAP;     // 地点行（含间距）
+  const nl = fs * 1.22;           // 课名每行
+  const budget = Math.max(0, h - PAD);
+  const time = budget >= t + nl;                     // 至少装得下「时间 + 1 行课名」
+  let loc = false;
+  let lp = Math.floor((budget - (time ? t : 0)) / nl);
+  if (hasLoc && budget >= t + m + nl * 2){ loc = true; lp = Math.floor((budget - t - m) / nl); }
+  return { time, loc, lp: clamp(lp || 1, 1, 6) };
+}
+
 function renderBoard(){
   const S = state.settings;
   const days = currentDays();
   const start = S.dayStart * 60, end = S.dayEnd * 60;
   const H = S.hourHeight;
   const bodyH = (end - start) / 60 * H;
+  const colW = boardColWidth(days.length);   // 一列的实际可用宽度 → 决定块内字号
   const board = $('#board');
   board.onclick = null;                 // 切回网格时清掉列表视图的事件委托
   const isToday = d => d === todayDow();
@@ -1357,14 +1420,26 @@ function renderBoard(){
     const w = (1 / it.cols) / days.length * 100;
     const top = (it.start - start) / 60 * H;
     const h = Math.max((it.end - it.start) / 60 * H - 2, 20);
-    const mini = h < 46;
+    /* 字号：按「这块自己真正能排字的宽度」算（并排挤窄时自动降档）；
+       4px 列间距 + 8px 内边距 + 2px 边框 = 14px 非文字宽度 */
+    const textW = colW / it.cols - 14;
+    let fs = blkFont(textW);
+    if (h < 26) fs = Math.max(9, Math.round(fs * 0.86 * 2) / 2);
+    const loc = [it.course.teacher, it.s.location].filter(Boolean).join(' · ');
+    const lay = blkLayout(h, fs, !!loc);
+    /* 时间行：整段放不下就退成只显示开始时间，再放不下就整行不显示。
+       窄列（比如手机铺 7 天）里宁可少一行，也不要让 "11:00–12:50" 被截掉半截。 */
+    const smallFs = Math.max(7, fs - 1.5);
+    const fitsW = s => s.length * smallFs * 0.6 <= textW;
+    const tFull = fmt(it.start) + '–' + fmt(it.end);
+    const timeText = !lay.time ? '' : (fitsW(tFull) ? tFull : (fitsW(fmt(it.start)) ? fmt(it.start) : ''));
     const fg = lum(it.course.color) > 0.62 ? '#16202e' : '#ffffff';
-    return `<div class="blk ${mini ? 'mini' : ''}" data-cid="${it.course.id}" data-sid="${it.s.id}"
-        title="点击编辑：${esc(it.course.name)}（${fmt(it.start)}-${fmt(it.end)}）"
-        style="left:${left}%;width:calc(${w}% - 4px);top:${top + 1}px;height:${h}px;--c:${it.course.color};--fg:${fg}">
-        <div class="bt">${fmt(it.start)} - ${fmt(it.end)}</div>
+    return `<div class="blk" data-cid="${it.course.id}" data-sid="${it.s.id}"
+        title="点击编辑：${esc(it.course.name)}（${fmt(it.start)}-${fmt(it.end)}）${loc ? ' · ' + esc(loc) : ''}"
+        style="left:${left}%;width:calc(${w}% - 4px);top:${top + 1}px;height:${h}px;--c:${it.course.color};--fg:${fg};--fs:${fs}px;--lp:${lay.lp}">
+        ${timeText ? `<div class="bt">${timeText}</div>` : ''}
         <div class="bn">${esc(it.course.name)}</div>
-        <div class="bm">${esc([it.course.teacher, it.s.location].filter(Boolean).join(' · ')) || ' '}</div>
+        ${lay.loc ? `<div class="bm">${esc(loc)}</div>` : ''}
       </div>`;
   }).join('');
 
@@ -1392,6 +1467,8 @@ function renderBoard(){
        <div class="gutter" style="height:${bodyH}px">${ticks}</div>
        <div class="canvas" id="canvas" style="height:${bodyH}px;--h:${H}px">${cols}${blocks}${nowHtml}${hint}</div>
      </div>`;
+
+  board.dataset.colw = colW.toFixed(1);   // 列宽留痕，便于测试与排查
 }
 
 /* =====================================================================
@@ -1559,6 +1636,21 @@ function openEditor(cid, prefill){
 function pickColor(){
   const used = state.courses.map(c => c.color);
   return PALETTE.find(c => !used.includes(c)) || PALETTE[state.courses.length % PALETTE.length];
+}
+/* 按课名把当前课表重新配色（同名课程同色）。
+   历史数据常是「导入进来清一色同一个蓝」——在窄屏色块里，
+   这跟排版一样是可读性杀手：扫一眼分不清哪节是哪门课。
+   新的导入会自动走 autoColor，这个函数用于把老数据一次性理顺。 */
+function recolorCourses(){
+  const byName = new Map();
+  let n = 0;
+  state.courses.forEach(c => {
+    if (!byName.has(c.name)) byName.set(c.name, PALETTE[byName.size % PALETTE.length]);
+    const col = byName.get(c.name);
+    if (c.color !== col){ c.color = col; n++; }
+  });
+  save(); render();
+  return n;
 }
 
 /* 上下滑动的时间选择列：把分钟整数值渲染成一列竖向可滚选项，返回 html 片段。
@@ -1847,6 +1939,10 @@ function openSettings(){
       </div>
     </div>
     <div class="setrow">
+      <div class="lb">课程配色<small>给每门课分配不同颜色，一眼分清哪节是哪门课（同名课程同色）</small></div>
+      <button class="btn" id="sRecolor">按课名配色</button>
+    </div>
+    <div class="setrow">
       <div class="lb">显示周末</div>
       <button class="switch" id="sWeekend" aria-pressed="${!!S.showWeekend}"></button>
     </div>
@@ -2001,6 +2097,11 @@ function openSettings(){
     el.textContent = w > tot ? `第 ${w} 周（已超学期 ${tot} 周）` : `第 ${w} / ${tot} 周`;
   };
   const cb = $('#sCloud'); if (cb) cb.onclick = openCloud;
+  const rc = $('#sRecolor');
+  if (rc) rc.onclick = () => {
+    const n = recolorCourses();
+    toast(n ? ('已为 ' + n + ' 门课程重新配色') : '每门课都已有自己的颜色了');
+  };
   $('#sTheme').onchange = commit;
   $('#sThemeToggle').onclick = () => {
     const cur = document.documentElement.dataset.theme;
@@ -4929,6 +5030,8 @@ window.CourseSchedule = {
   on, emit, render,
   exportJSON, exportPNG,
   openEditor, openSettings,
+  /* 课程块排版（周视图）：字号与行数自适应的纯函数，便于测试与排查 */
+  layout: { colWidth: boardColWidth, font: blkFont, fit: blkLayout, autoColor, recolor: recolorCourses },
   /* 数据入口 / 出口 */
   openImport, openIO, parseImport: impDetect, parseUnified: impParseUnified,
   /* AI 识图（截图/拍照 → 统一格式 → 导入）：无配置时调用不会有副作用 */
@@ -4991,7 +5094,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.17.17';
+const APP_VERSION = '2026.09.17.18';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
