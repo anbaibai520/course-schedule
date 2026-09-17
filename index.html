@@ -43,17 +43,31 @@
       return;
     }
     if (info.version && info.version !== ok) localStorage.setItem('course-app-pending', info.version);
-    document.write('<style id="hot-hide">html,body{visibility:hidden !important}</style>');
+    /* 关键：本页（内置版）接下来会被整份替换掉，它自己的启动工作全是白做的。
+       这里打标记，让内置版主脚本跳过渲染/网络/定时器，只留下解析成本——
+       这也是"打开要等两遍"的主要来源（旧实现把整份启动干了两遍，还留下指向已销毁
+       DOM 的定时器与重复请求）。 */
+    window.__hotSwapPending = 1;
+    /* 只藏主界面，不藏 html/body：内置版既然已经不渲染了，就没有"旧界面闪一下"的问题，
+       而加载图（#splash，fixed 铺满）可以在这一瞬先画出来，省掉一段纯白/纯黑等待。
+       老版本内置页（还没跳过启动的）依然会被 .app 规则挡住，不会闪出旧课表。 */
+    document.write('<style id="hot-hide">.app{visibility:hidden !important}</style>');
     var doReplace = function(){
       if (window.__hotLoaded) return;
       window.__hotLoaded = 1;
-      /* 自愈看门狗：新页面若没在 8s 内完成启动（主脚本跑完会清除该标记），
+      /* 自愈看门狗：新文档若没在 8s 内完成首屏（主脚本 render 之后会置 window.__bootOk），
          说明替换后的页面脚本异常，立即丢弃并回退到内置版本。
+         判据放在 window 而不是 DOM：document.open() 会清空 DOM，但 window 存活，
+         所以用 DOM 标记做判据在被替换的文档里天然不成立——旧版 8 秒无条件整页重载
+         就是这么来的（等于每次带更新的启动都多跑一遍启动流程）。
+         __bootOk 在首屏渲染完成时即写入（早于任何网络请求），8s 已是数倍余量。
+         guard 脚本还负责把 __hotSwapPending 归零：新文档必须正常运行，不能继承
+         "跳过启动"的标记（window 在整文档替换时是复用的）。
          v.7 坑：document.write 输出字面结束标签会让 HTML 解析器提前闭合 script 块，
          后续所有 ' + ' 字面量直接成为 body 文本。正确做法：拼接字符串，不让源代码里
          出现结束标签完整序列。 */
-      var guardScript = '<script>setTimeout(function(){' +
-        'if(document.getElementById("__upd_ok")===null){' +
+      var guardScript = '<script>window.__hotSwapPending=0;setTimeout(function(){' +
+        'if(!window.__bootOk){' +
         'try{localStorage.removeItem("course-app-hot-html");' +
         'localStorage.removeItem("course-app-upd");' +
         'localStorage.removeItem("course-app-pending");}catch(e){}' +
@@ -485,6 +499,32 @@ button{cursor:pointer;border:0;background:none}
 .switch[aria-pressed="true"]{background:var(--accent)}
 .switch[aria-pressed="true"]::after{left:22px}
 .hint{font-size:12px;color:var(--muted);line-height:1.6}
+/* ============ 应用更新（弹窗 / 进度 / 重启遮罩） ============ */
+.btn[disabled]{opacity:.55;pointer-events:none}
+.upd-tag{
+  display:inline-block;padding:3px 9px;border-radius:99px;font-size:12px;
+  background:var(--panel2);color:var(--muted);border:1px solid var(--line);
+}
+.upd-tag.new{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.upd-link{color:var(--muted);text-decoration:underline;cursor:pointer}
+.upd-link:hover{color:var(--text)}
+#updMask{
+  position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb,var(--bg) 90%,transparent);
+}
+.upd-card{
+  display:flex;flex-direction:column;align-items:center;gap:10px;min-width:186px;
+  padding:26px 30px;border-radius:var(--radius);background:var(--panel);
+  box-shadow:var(--shadow);text-align:center;
+}
+.upd-card b{font-size:14px;color:var(--text)}
+.upd-card small{font-size:12px;color:var(--muted)}
+.upd-spin{
+  width:30px;height:30px;border-radius:50%;border:3px solid var(--line);
+  border-top-color:var(--accent);animation:updSpin .8s linear infinite;
+}
+@keyframes updSpin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){ .upd-spin{animation-duration:2.4s} }
 /* ============ 日列表视图 ============ */
 .dlist{display:flex;flex-direction:column}
 .dgroup{border-bottom:1px solid var(--line)}
@@ -757,6 +797,18 @@ window.addEventListener('error', function () {
 <input type="file" id="fileIn" accept="application/json,.json" hidden data-page-node-id="AGCtYL5X34nAL3jER0ZyAe">
 
 <script>
+/* =====================================================================
+   为什么整段包在一个 IIFE 里（不要摊平成顶层代码）
+   ---------------------------------------------------------------------
+   App 的"免重装升级"靠 document.open() + document.write() 整份替换文档。
+   但 document.open() 只清 DOM，**不重置 JS 全局词法环境**：被替换进来的新文档
+   若在顶层再声明一次同名 const/let，就会在脚本实例化阶段直接抛
+   SyntaxError: Identifier 'LS_KEY' has already been declared，
+   整段主脚本一行都不执行（本文件顶层有 60+ 个 const/let，必然命中）。
+   后果：新版界面根本没跑起来，却被当作"启动失败"，更新被静默丢弃。
+   把顶层声明收进函数作用域即可彻底规避；.call(window) 保持顶层 this === window 的原语义。
+   ===================================================================== */
+(function(){
 "use strict";
 /* =====================================================================
    我的课程表 · 单文件应用
@@ -1451,7 +1503,12 @@ function openModal(title, bodyHtml, footHtml){
   $('#modal').hidden = false;
   $('#mBody').scrollTop = 0;
 }
-function closeModal(){ $('#modal').hidden = true; $('#mBody').innerHTML = ''; $('#mFoot').innerHTML = ''; editing = null; }
+function closeModal(){
+  $('#modal').hidden = true; $('#mBody').innerHTML = ''; $('#mFoot').innerHTML = ''; editing = null;
+  /* 更新弹窗被关闭（✕ / 点遮罩）：通知一次，用于停止倒计时，避免"关了还在倒计时自动重启" */
+  const hook = window._updOnClose;
+  if (hook){ window._updOnClose = null; try { hook(); } catch (e) {} }
+}
 document.addEventListener('click', e => { if (e.target.dataset && 'close' in e.target.dataset) closeModal(); });
 
 /* 通用询问弹窗：buttons = [{label, value, cls}] */
@@ -1789,6 +1846,14 @@ function openSettings(){
       </select>
     </div>
     <div class="setrow">
+      <div class="lb">默认视图<small>打开应用时进入的视图（默认周视图）。视图带上的临时切换不会改这里</small></div>
+      <select id="sView">
+        <option value="week" ${S.view === 'week' ? 'selected' : ''}>周视图</option>
+        <option value="day"  ${S.view === 'day'  ? 'selected' : ''}>日视图</option>
+        <option value="list" ${S.view === 'list' ? 'selected' : ''}>列表</option>
+      </select>
+    </div>
+    <div class="setrow">
       <div class="lb">按周上课<small>只显示当前周实际要上的课（关掉则每周都显示）</small></div>
       <button class="switch" id="sWeekFilter" aria-pressed="${!!S.weekFilter}"></button>
     </div>
@@ -1843,6 +1908,18 @@ function openSettings(){
       <button class="btn" id="sPrint">打印</button>
     </div>
     <div class="setrow">
+      <div class="lb">一键导入课表<small>粘贴 Excel / 文本，或选文件（JSON / CSV / ICS 日历）</small></div>
+      <button class="btn" id="sImport">导入</button>
+    </div>
+    <div class="setrow">
+      <div class="lb">AI 识图导入<small>课表截图或拍照 → AI 识别成统一格式 → 确认后入库</small></div>
+      <button class="btn" id="sAiImport">识别</button>
+    </div>
+    <div class="setrow">
+      <div class="lb">AI 整理课表<small>不填接口也能用：复制提示词 → 粘给任意 AI → 结果粘回导入</small></div>
+      <button class="btn" id="sAiList">打开</button>
+    </div>
+    <div class="setrow">
       <div class="lb">备份 / 恢复<small>导出 JSON 存好，换设备时导入即可还原</small></div>
       <button class="btn" id="sIO">备份</button>
     </div>
@@ -1857,6 +1934,14 @@ function openSettings(){
     <div class="setrow">
       <div class="lb">应用更新<small id="sUpdInfo">当前版本 ${APP_VERSION}</small></div>
       <button class="btn" id="sUpdate">检查更新</button>
+    </div>
+    <div class="setrow" id="sUpdRowPending" style="display:none">
+      <div class="lb">新版已下载<small id="sUpdPendingInfo"></small></div>
+      <button class="btn primary" id="sUpdApply">立即重启</button>
+    </div>
+    <div class="setrow">
+      <div class="lb">自动更新<small>检测到新版自动下载，倒计时结束后自动重启</small></div>
+      <button class="switch" id="sAutoUpd" aria-pressed="true" title="开启 / 关闭自动更新"></button>
     </div>
     <div class="hint" style="margin-top:-2px" id="sUpdState"></div>
     <div class="setrow" id="sRollRow" style="display:none">
@@ -1876,6 +1961,12 @@ function openSettings(){
     S.accent = $('#sAccent').value;
     S.showWeekend = $('#sWeekend').getAttribute('aria-pressed') === 'true';
     S.firstDay = +$('#sFirst').value;
+    /* 默认视图：立即生效（否则改完没反应，要等下次打开才看到） */
+    S.view = $('#sView').value || 'week';
+    if (ui.view !== S.view){
+      ui.view = S.view;
+      if (ui.view === 'day' && !visibleDays().includes(ui.day)) ui.day = visibleDays()[0];
+    }
     S.dayStart = clamp(+$('#sStart').value || 7, 0, 20);
     S.dayEnd = clamp(+$('#sEnd').value || 22, S.dayStart + 1, 24);
     S.hourHeight = +$('#sH').value;
@@ -1908,6 +1999,7 @@ function openSettings(){
   };
   $('#sAccent').oninput = commit;
   $('#sFirst').onchange = commit;
+  $('#sView').onchange  = commit;
   $('#sStart').onchange = commit;
   $('#sEnd').onchange = commit;
   $('#sSnap').onchange = commit;
@@ -1937,21 +2029,31 @@ function openSettings(){
     const si2 = $('#sUpdInfo'); if (!si2) return;
     const st  = $('#sUpdState');
     const rr  = $('#sRollRow');
+    const pr  = $('#sUpdRowPending');
+    const pi  = $('#sUpdPendingInfo');
+    const ab  = $('#sAutoUpd');
     const i = updInfo();
-    if (i.version && i.version !== APP_VERSION){
-      si2.textContent = `新版 ${i.version} 已下载，重启应用生效`;
+    /* 已下载但尚未应用：给出显式的「立即重启」入口（比只写一行小字更可操作） */
+    const pendReady = !!(i.version && i.version !== APP_VERSION && updHotReady(i.version));
+    if (pendReady){
+      si2.textContent = `新版 ${i.version} 已下载，重启后生效`;
+      if (pr) pr.style.display = '';
+      if (pi) pi.textContent = `已下载 ${i.version}，点右侧按钮或重新打开应用即可切换`;
       if (rr) rr.style.display = '';
     } else {
       si2.textContent = `当前版本 ${APP_VERSION}`;
+      if (pr) pr.style.display = 'none';
       if (rr) rr.style.display = 'none';
     }
+    if (ab) ab.setAttribute('aria-pressed', String(updAutoPref()));
     /* 诊断行：只在确有问题时显示原因（含失败原因或待验证缓存），帮助定位“更新后异常” */
     if (st){
       let diag = '';
       const pend = (function(){ try { return localStorage.getItem('course-app-pending') || ''; } catch(e){ return ''; } })();
       if (i.lastErr) diag = `上次检查：${i.lastErr}。`;
-      else if (i.version && i.version !== APP_VERSION) diag = `已下载 ${i.version}，本次启动应已完成替换。若仍异常，点下方“回退内置版”。`;
+      else if (pendReady) diag = `已下载 ${i.version}，点上方「立即重启」即可切换；若切换后异常，可用下方“回退内置版”。`;
       else if (pend) diag = '检测到上次新版未成功启动，已自动回退到内置版。';
+      else if (i.skipped) diag = `已跳过版本 ${i.skipped}（自动检查不再提示，仍可点「检查更新」手动升级）。`;
       st.textContent = diag;
     }
   };
@@ -1962,6 +2064,17 @@ function openSettings(){
     const p = updCheck(true);
     if (p && typeof p.then === 'function') p.then(done, done); else done();
   };
+  { /* 一键重启到新版 */
+    const ap = $('#sUpdApply');
+    if (ap) ap.onclick = () => { closeModal(); updRestart(); };
+    const ab = $('#sAutoUpd');
+    if (ab) ab.onclick = () => {
+      const on = ab.getAttribute('aria-pressed') !== 'true';
+      ab.setAttribute('aria-pressed', String(on));
+      updSetAuto(on);
+      toast(on ? '已开启自动更新' : '已关闭自动更新，将先询问再更新');
+    };
+  }
   const rb = $('#sRollback');
   if (rb) rb.onclick = () => {
     updRollback();
@@ -1976,6 +2089,14 @@ function openSettings(){
   $('#sExportImg').onclick = () => { closeModal(); exportPNG(); };
   $('#sPrint').onclick    = () => { closeModal(); setTimeout(() => window.print(), 120); };
   $('#sIO').onclick       = () => { closeModal(); openIO(); };
+  /* 一键导入课表：粘贴 Excel/文本、选文件；AI 识图：截图/拍照 → 识别 → 确认入库 */
+  const si = $('#sImport');
+  if (si) si.onclick = () => { closeModal(); openImport(); };
+  const sai = $('#sAiImport');
+  if (sai) sai.onclick = () => { closeModal(); openImport('img'); };
+  /* AI 整理课表：复制提示词 → 外部 AI 整理 → 结果粘回导入（无需配置接口） */
+  const sal = $('#sAiList');
+  if (sal) sal.onclick = () => { closeModal(); openAiList(); };
   $('#sClear').onclick = async () => {
     const r = await askModal('清空课程',
       `将删除「<b>${esc(personName())}</b>」的全部课程数据，且无法撤销。建议先导出备份。`,
@@ -2154,6 +2275,911 @@ $('#fileIn').addEventListener('change', async e => {
     console.error(err);
   } finally { e.target.value = ''; }
 });
+
+/* =====================================================================
+   一键导入课表
+   ---------------------------------------------------------------------
+   把外部课表一次性导进来，自动识别来源并统一映射到本应用的课程模型。
+     · 文本 / 文件   JSON（本应用备份）· CSV / TSV（Excel 复制粘贴）· ICS 日历 · 纯文本行
+     · 图片          课表截图 → 视觉大模型识别 → 统一 JSON（需在弹窗内配置接口）
+   统一中转格式（UTF）：
+     [{ name, teacher, note, sessions: [{ day, start, end, location, weeks }] }]
+     day 1-7（周一…周日）· start/end 为分钟数 · weeks 为 {f,t,p}
+   ===================================================================== */
+
+/* 节次 → 时间的默认对照表（多数高校作息）。表格/识别结果里出现"第N节"时按此换算 */
+const IMP_PERIODS = [
+  ['08:00','08:45'], ['08:55','09:40'], ['10:00','10:45'], ['10:55','11:40'],
+  ['14:00','14:45'], ['14:55','15:40'], ['16:00','16:45'], ['16:55','17:40'],
+  ['19:00','19:45'], ['19:55','20:40'], ['20:50','21:35']
+];
+/* 表头关键词（中英文）→ 列角色；按顺序优先匹配 */
+const IMP_KEYS = [
+  ['name',    /课程|科目|课名|名称|course|subject|title/i],
+  ['day',     /星期|周几|礼拜|weekday|\bday\b/i],
+  ['start',   /开始|起始|上课时间|start|begin|from/i],
+  ['end',     /结束|下课|end|finish|\bto\b/i],
+  ['time',    /时间段|时间|节次|课时|\btime\b|\bperiod\b/i],
+  ['loc',     /地点|教室|位置|场地|location|room|place/i],
+  ['teacher', /教师|老师|任课|授课|teacher|instructor/i],
+  ['weeks',   /周次|周数|教学周|\bweeks?\b/i],
+  ['note',    /备注|\bnote\b|remark|memo/i]
+];
+
+/* 按 TAB > 逗号/分号 > 空白 拆分一行 */
+function impSplit(line){
+  if (line.indexOf('\t') >= 0) return line.split('\t').map(x => x.trim());
+  if (/[,，;；]/.test(line)) return line.split(/[,，;；]/).map(x => x.trim());
+  return line.split(/\s+/).map(x => x.trim());
+}
+/* 时间文本 → 分钟数；支持 8:00 / 08：00 / 8时30 / 830 / 0830 / 1400 / 8 / 8.5 */
+function impTime(v){
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{1,2})\s*[:：]\s*(\d{1,2})$/);
+  if (m) return clamp(+m[1] * 60 + +m[2], 0, 1440);
+  m = s.match(/^(\d{1,2})\s*[时点]\s*(\d{1,2})?\s*分?$/);
+  if (m) return clamp(+m[1] * 60 + (+m[2] || 0), 0, 1440);
+  m = s.match(/^(\d{3,4})$/);
+  if (m){ const d = m[1]; return clamp(+d.slice(0, d.length - 2) * 60 + +d.slice(-2), 0, 1440); }
+  m = s.match(/^(\d{1,2})(?:\.(\d{1,2}))?$/);
+  if (m) return clamp(Math.round((+m[1] + (m[2] ? +('0.' + m[2]) : 0)) * 60), 0, 1440);
+  return null;
+}
+/* 统一中转格式里约定的时间字段：**数字按"分钟数"**解释（480 = 08:00），
+   文本仍按 8:00 / 第N节 等解释。
+   不能直接把数字丢给 impTime —— 它会把 600 当成 06:00（HHMM 规则），
+   于是"识别结果编辑后重新导入"会把时间整体改错。 */
+function impMin(v){
+  if (typeof v === 'number' && isFinite(v)) return clamp(Math.round(v), 0, 1440);
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  if (/^\d{1,4}$/.test(s)) return clamp(+s, 0, 1440);
+  return impTime(s);
+}
+/* 节次 → 时间段 */
+function impPeriods(a, b){
+  a = clamp(+a || 1, 1, IMP_PERIODS.length);
+  b = clamp(+b || a, a, IMP_PERIODS.length);
+  return { start: impTime(IMP_PERIODS[a - 1][0]), end: impTime(IMP_PERIODS[b - 1][1]) };
+}
+/* 时间段文本 → {start,end}；支持 08:00-09:40 / 8:00~9:40 / 第1-2节 / 第3节 */
+function impRange(v){
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  let m = s.match(/(\d+)\s*[-–~至到]\s*(\d+)\s*节/);
+  if (m) return impPeriods(+m[1], +m[2]);
+  m = s.match(/第?\s*(\d+)\s*节/);
+  if (m) return impPeriods(+m[1], +m[1]);
+  const parts = s.split(/[-–—~～至到]/);
+  if (parts.length >= 2){
+    const a = impTime(parts[0]), b = impTime(parts[1]);
+    if (a != null && b != null) return { start: a, end: b };
+  }
+  const a = impTime(s);
+  return a != null ? { start: a, end: Math.min(1440, a + 45) } : null;
+}
+/* 星期文本 → 1..7（周一=1 … 周日=7） */
+function impDay(v){
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return null;
+  if (/^[1-7]$/.test(s)) return +s;
+  if (/^0$/.test(s)) return 7;
+  let m = s.match(/(?:周|星期|礼拜)\s*([一二三四五六日天末])/);
+  if (m){ const d = m[1]; return (d === '日' || d === '天' || d === '末') ? 7 : '一二三四五六'.indexOf(d) + 1; }
+  m = s.toLowerCase().match(/\b(mon|tue|wed|thu|fri|sat|sun)/);
+  if (m) return ({ mon:1, tue:2, wed:3, thu:4, fri:5, sat:6, sun:7 })[m[1]];
+  m = s.match(/[1-7]/);
+  if (m) return +m[1];
+  return null;
+}
+/* 周次文本 → {f,t,p}；支持 1-16 / 1-16周 / 单周 / 双周 / 1,3,5 / 空(整学期) */
+function impWeeks(v, total){
+  total = clamp(+total || 20, 1, 30);
+  const s = String(v == null ? '' : v).trim();
+  if (!s || /每周|全周|整学期|\ball\b/i.test(s)) return { f: 1, t: total, p: 0 };
+  let p = 0;
+  if (/单周|单数周|\bodd\b/i.test(s)) p = 1;
+  else if (/双周|双数周|\beven\b/i.test(s)) p = 2;
+  const nums = (s.match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= 30);
+  /* 只有"单周/双周"而没有具体数字时，也要保留奇偶（整学期范围） */
+  if (!nums.length) return { f: 1, t: total, p };
+  if (nums.length > 1 && !p){
+    if (nums.every(n => n % 2 === 1)) p = 1;
+    else if (nums.every(n => n % 2 === 0)) p = 2;
+  }
+  return { f: clamp(Math.min(...nums), 1, total), t: clamp(Math.max(...nums), 1, total), p };
+}
+/* 同名同教师的多行合并成一门课（多 session），契合本应用"一门课含多个时间段"的模型 */
+function impMerge(rows){
+  const map = new Map();
+  (rows || []).forEach(r => {
+    if (!r || !r.name) return;
+    const key = r.name + '\u0001' + (r.teacher || '');
+    let ex = map.get(key);
+    if (!ex){ ex = { name: r.name, teacher: r.teacher || '', note: r.note || '', sessions: [] }; map.set(key, ex); }
+    if (!ex.note && r.note) ex.note = r.note;
+    if (r.sessions) ex.sessions.push(...r.sessions);
+  });
+  return [...map.values()];
+}
+
+/* ---------- 表格 / 纯文本解析 ---------- */
+function impParseTable(text, total){
+  const lines = String(text).replace(/\r/g, '').split('\n')
+    .map(l => l.replace(/\u00a0/g, ' ').trim()).filter(Boolean);
+  if (!lines.length) return { courses: [], warnings: ['内容为空'] };
+  const rows = lines.map(impSplit);
+  const out = [], warnings = [];
+  const col = {};
+  rows[0].forEach((c, i) => {
+    for (const pair of IMP_KEYS){
+      if (col[pair[0]] == null && pair[1].test(c)){ col[pair[0]] = i; break; }
+    }
+  });
+  /* 表头判定：命中「课程名」列，或至少命中 2 个表头关键词。
+     只用 1 个关键词容易误判 —— 例如数据行里出现「老师」会被当成教师列表头 */
+  const headerMode = (col.name != null) || (Object.keys(col).length >= 2);
+  if (headerMode && col.name == null) warnings.push('表头里没找到「课程名」列，请核对列名');
+  const body = headerMode ? rows.slice(1) : rows;
+  body.forEach((cells, ri) => {
+    const ln = ri + (headerMode ? 2 : 1);
+    const at = k => (headerMode && col[k] != null) ? cells[col[k]] : undefined;
+    let name, dayV, startV, endV, locV, teaV, weekV, timeV, noteV;
+    if (headerMode){
+      name = at('name'); dayV = at('day'); startV = at('start'); endV = at('end');
+      locV = at('loc'); teaV = at('teacher'); weekV = at('weeks'); timeV = at('time'); noteV = at('note');
+    } else {
+      if (cells.length < 3){ warnings.push('第 ' + ln + ' 行字段太少，已跳过'); return; }
+      name = cells[0]; dayV = cells[1]; startV = cells[2]; endV = cells[3];
+      locV = cells[4]; teaV = cells[5]; weekV = cells[6];
+    }
+    name = String(name == null ? '' : name).trim();
+    if (!name) return;
+    const day = impDay(dayV);
+    let rng = null;
+    if (startV != null && String(startV).trim() && endV != null && String(endV).trim()){
+      const a = impTime(startV), b = impTime(endV);
+      if (a != null && b != null) rng = { start: a, end: b };
+    }
+    if (!rng && timeV) rng = impRange(timeV);
+    if (!rng && startV != null) rng = impRange(startV);
+    if (day == null || !rng){ warnings.push('第 ' + ln + ' 行未能识别星期或时间，已跳过：' + name); return; }
+    out.push({
+      name,
+      teacher: String(teaV == null ? '' : teaV).trim(),
+      note: String(noteV == null ? '' : noteV).trim(),
+      sessions: [{ day, start: rng.start, end: rng.end, location: String(locV == null ? '' : locV).trim(), weeks: impWeeks(weekV, total) }]
+    });
+  });
+  return { courses: impMerge(out), warnings };
+}
+
+/* ---------- ICS 日历解析 ---------- */
+function impParseICS(text, total){
+  const out = [], warnings = [];
+  const grab = (blk, key) => { const m = blk.match(new RegExp('^' + key + '[^:\\r\\n]*:(.*)$', 'im')); return m ? m[1].trim() : ''; };
+  const stamp = v => {
+    const m = String(v).match(/(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2}))?/);
+    if (!m) return null;
+    return { y: +m[1], mo: +m[2], d: +m[3], h: m[4] != null ? +m[4] : null, mi: m[5] != null ? +m[5] : null };
+  };
+  String(text).split(/BEGIN:VEVENT/i).slice(1).forEach((blk, i) => {
+    const summary = grab(blk, 'SUMMARY'), ds = grab(blk, 'DTSTART'), de = grab(blk, 'DTEND');
+    const loc = grab(blk, 'LOCATION'), desc = grab(blk, 'DESCRIPTION');
+    if (!summary || !ds){ warnings.push('第 ' + (i + 1) + ' 个日程缺少标题或开始时间，已跳过'); return; }
+    const s = stamp(ds);
+    if (!s){ warnings.push('无法解析开始时间：' + summary); return; }
+    const wd = new Date(s.y, s.mo - 1, s.d).getDay();
+    const e = stamp(de);
+    const start = s.h != null ? s.h * 60 + s.mi : 480;
+    const end = (e && e.h != null) ? e.h * 60 + e.mi : Math.min(1440, start + 45);
+    if (end <= start){ warnings.push('结束时间不晚于开始时间，已跳过：' + summary); return; }
+    out.push({ name: summary, teacher: '', note: desc,
+      sessions: [{ day: wd === 0 ? 7 : wd, start, end, location: loc, weeks: impWeeks('', total) }] });
+  });
+  if (!out.length && !warnings.length) warnings.push('没有解析到任何日程');
+  return { courses: impMerge(out), warnings };
+}
+
+/* ---------- 来源自动识别 ---------- */
+function impDetect(text, filename, total){
+  const t = String(text || '').replace(/^\uFEFF/, '');
+  const fn = String(filename || '').toLowerCase();
+  if (!t.trim()) throw new Error('内容为空');
+  if (fn.endsWith('.json') || /^\s*[\[{]/.test(t)){
+    const obj = JSON.parse(t);
+    const n = normalize(Array.isArray(obj) ? { courses: obj } : obj);
+    return { kind: 'json', people: n.people };
+  }
+  if (fn.endsWith('.ics') || /BEGIN:VCALENDAR/i.test(t)){
+    const r = impParseICS(t, total);
+    return { kind: 'ics', courses: r.courses, warnings: r.warnings };
+  }
+  const r = impParseTable(t, total);
+  return { kind: fn.endsWith('.csv') ? 'csv' : 'table', courses: r.courses, warnings: r.warnings };
+}
+
+/* ---------- 统一中转格式解析（用于「识别结果可手动修正」后重新读入） ----------
+   入参是统一格式的 JSON 文本：
+     [{ name, teacher, note, sessions:[{ day, start, end, location, weeks }] }]
+   容错点：day 允许数字或"周一"文本；start/end 允许 "08:00" 或 480 分钟数；
+   weeks 允许文本或已是 {f,t,p} 对象；字段名允许 course/room 之类的别名。 */
+function impParseUnified(text, total){
+  let obj;
+  try { obj = JSON.parse(String(text || '')); }
+  catch (e){ throw new Error('JSON 格式有误：' + ((e && e.message) || e)); }
+  const list = Array.isArray(obj) ? obj : ((obj && (obj.courses || obj.data || obj.list)) || []);
+  if (!Array.isArray(list)) throw new Error('顶层应当是课程数组，或含 courses 字段的对象');
+  const rows = [], warnings = [];
+  list.forEach((it, i) => {
+    if (!it) return;
+    const name = String(it.name || it.course || it.title || '').trim();
+    if (!name){ warnings.push('第 ' + (i + 1) + ' 门缺少课程名，已跳过'); return; }
+    const sess = Array.isArray(it.sessions) ? it.sessions
+               : (it.day != null ? [{ day: it.day, start: it.start, end: it.end, location: it.location, weeks: it.weeks }] : []);
+    const out = [];
+    sess.forEach(s => {
+      if (!s) return;
+      const day = impDay(s.day);
+      const a = impMin(s.start), b = impMin(s.end);
+      if (day == null || a == null || b == null || b <= a) return;
+      out.push({
+        day, start: a, end: b,
+        location: String(s.location != null ? s.location : (s.room || '')).trim(),
+        weeks: (s.weeks && typeof s.weeks === 'object') ? s.weeks : impWeeks(s.weeks, total)
+      });
+    });
+    if (!out.length){ warnings.push('「' + name + '」没有可用的时间段，已跳过'); return; }
+    rows.push({ name, teacher: String(it.teacher || '').trim(), note: String(it.note || '').trim(), sessions: out });
+  });
+  return { courses: impMerge(rows), warnings };
+}
+
+/* ---------- 落到课表 ---------- */
+/* mode: append 追加到当前课表 | replace 覆盖当前课表 | new 新建一份课表 */
+function impCommit(courses, mode, newName){
+  const list = normalize({ courses }).courses;
+  if (!list.length) return 0;
+  if (mode === 'replace') state.courses = list;
+  else if (mode === 'new'){ const p = addPerson(newName || '导入课表'); p.courses = list; }
+  else state.courses = state.courses.concat(list);
+  save(); render();
+  return list.length;
+}
+/* JSON 备份：按「整份课表」粒度导入 */
+function impCommitPeople(people, mode){
+  const inc = normalize({ people }).people;
+  if (!inc.length) return { p: 0, c: 0 };
+  const nC = inc.reduce((a, x) => a + x.courses.length, 0);
+  if (mode === 'replace'){
+    state.people = inc.map(p => ({ id: p.id, name: p.name, courses: p.courses }));
+    state.activeId = state.people[0].id;
+  } else {
+    const seen = new Set(state.people.map(p => p.id));
+    inc.forEach(p => { if (seen.has(p.id)) p.id = uid(); state.people.push({ id: p.id, name: p.name, courses: p.courses }); });
+  }
+  save(); render();
+  return { p: inc.length, c: nC };
+}
+
+/* =====================================================================
+   图片识图（视觉大模型）
+   ---------------------------------------------------------------------
+   · 需要在弹窗内填一个「OpenAI 兼容」且支持图片的接口地址 + 模型 + Key
+   · Key 只写入本机 localStorage，不上传到任何第三方（除你配置的这个接口本身）
+   · 图片先在本地压缩再上传，省流量、也更快
+   ===================================================================== */
+const AI_LS = 'course-ai-v1';
+/* 常见 OpenAI 兼容视觉接口预设（模型名会随服务商调整，故每个预设都带一份候选清单，
+   弹窗内可下拉选、也可直接手改）。默认选第一个：硅基流动有免费额度，适合先试通流程。 */
+const AI_PRESETS = [
+  { name: '硅基流动 SiliconFlow（有免费额度）',
+    url: 'https://api.siliconflow.cn/v1/chat/completions',
+    model: 'Qwen/Qwen3-VL-8B-Instruct',
+    models: ['Qwen/Qwen3-VL-8B-Instruct', 'Qwen/Qwen3-VL-30B-A3B-Instruct', 'Qwen/Qwen3-VL-32B-Instruct', 'zai-org/GLM-4.5V', 'PaddlePaddle/PaddleOCR-VL-1.5'] },
+  { name: '阿里云百炼 · 通义千问',
+    url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    model: 'qwen3-vl-flash',
+    models: ['qwen3-vl-flash', 'qwen3-vl-plus', 'qwen-vl-max', 'qwen-vl-plus', 'qwen-vl-ocr'] },
+  { name: '智谱 GLM',
+    url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    model: 'glm-4v-flash',
+    models: ['glm-4v-flash', 'glm-4v-plus', 'glm-4.5v'] },
+  { name: '火山方舟 · 豆包（模型名填推理接入点 ID）',
+    url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+    model: '',
+    models: [] }
+];
+const AI_DEFAULT_PRESET = 0;
+/* 「重新识别」需要跨弹窗重建保留本次图片，故放在模块级 */
+let _impPendingImgs = null;
+function aiCfg(){ try { return JSON.parse(localStorage.getItem(AI_LS) || '{}'); } catch (e){ return {}; } }
+function aiSaveCfg(o){ try { localStorage.setItem(AI_LS, JSON.stringify(o)); } catch (e){} }
+
+/* 压缩图片：长边不超过 maxSide，输出 JPEG dataURL */
+function aiShrinkImage(file, maxSide){
+  maxSide = maxSide || 1600;
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        const sc = Math.min(1, maxSide / Math.max(w || 1, h || 1));
+        w = Math.max(1, Math.round(w * sc)); h = Math.max(1, Math.round(h * sc));
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        const data = cv.toDataURL('image/jpeg', 0.85);
+        URL.revokeObjectURL(url);
+        resolve(data);
+      } catch (e){ URL.revokeObjectURL(url); reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片读取失败')); };
+    img.src = url;
+  });
+}
+
+const AI_PROMPT = [
+  '你是课表结构化助手。请识别这张课程表图片，把里面的课程整理成 JSON。',
+  '只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码块。格式如下：',
+  '{"courses":[{"name":"课程名","teacher":"任课教师","location":"上课地点","day":1,"start":"08:00","end":"09:40","weeks":"1-16"}]}',
+  '规则：',
+  '1) day 用数字 1-7，分别代表周一至周日；',
+  '2) start/end 用 24 小时制 "HH:MM"；若表里是"第N节"，按此对照换算：',
+  '   第1节 08:00、第2节 08:55、第3节 10:00、第4节 10:55、第5节 14:00、',
+  '   第6节 14:55、第7节 16:00、第8节 16:55、第9节 19:00、第10节 19:55、第11节 20:50；',
+  '3) weeks 描述周次，如 "1-16"、"1-8"、"单周"、"双周"、"1,3,5"；整学期都上则留空字符串；',
+  '4) 课表里常见合并单元格：同一门课占连续多节，请按它实际占用的行范围给出 start/end；',
+  '5) 同一门课出现在多天或多时段时，输出多条同名记录，day/时间不同；',
+  '6) 若一个格子里写了两门课，拆成两条记录；',
+  '7) 看不清或认不出的字段用空字符串，绝不编造；课名看不清就照原样抄写，不要猜测。'
+].join('\n');
+
+/* ---------------------------------------------------------------------
+   「AI 整理课表」——不配置任何接口也能用 AI 的那条路
+   ---------------------------------------------------------------------
+   把下面这段提示词复制到任意外部 AI（DeepSeek / 豆包 / Kimi / 元宝…），
+   连同课表截图或教务系统复制出来的文字一起发过去，让它吐出统一格式 JSON，
+   再把 JSON 粘回「一键导入课表」即可。
+   输出格式与 AI_PROMPT、impParseUnified 完全一致，两条路径可以互换使用。
+   --------------------------------------------------------------------- */
+const AI_LIST_PROMPT = [
+  '你是课表结构化助手。我会给你一份课程表 —— 可能是截图、照片，也可能是从教务系统复制出来的乱文本。',
+  '请把它整理成 JSON，只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码块。格式如下：',
+  '{"courses":[{"name":"课程名","teacher":"任课教师","location":"上课地点","day":1,"start":"08:00","end":"09:40","weeks":"1-16"}]}',
+  '规则：',
+  '1) day 用数字 1-7，分别代表周一至周日；',
+  '2) start/end 用 24 小时制 "HH:MM"；若表里是"第N节"，按此对照换算：',
+  '   第1节 08:00、第2节 08:55、第3节 10:00、第4节 10:55、第5节 14:00、',
+  '   第6节 14:55、第7节 16:00、第8节 16:55、第9节 19:00、第10节 19:55、第11节 20:50；',
+  '3) weeks 描述周次，如 "1-16"、"1-8"、"单周"、"双周"、"1,3,5"；整学期都上则留空字符串；',
+  '4) 课表里常见合并单元格：同一门课占连续多节，请按它实际占用的行范围给出 start/end；',
+  '5) 同一门课出现在多天或多时段时，输出多条同名记录，day/时间不同；',
+  '6) 若一个格子里写了两门课，拆成两条记录；',
+  '7) 看不清或没有的字段用空字符串，绝不编造；课名看不清就照原样抄写，不要猜测；',
+  '8) 若我给的是"课程名 教师 周次 节次"这类流水账文本，同样整理成上面的 JSON：',
+  '   把教师从课名里拆出来放进 teacher，节次换算成 start/end，周次放进 weeks。',
+  '我现在把课表发给你。'
+].join('\n');
+
+/* 跳转目标：只做纯 Web 跳转，不依赖任何原生插件，因此可经热更新直接生效 */
+const AI_LIST_PLATFORMS = [
+  { name: 'DeepSeek', url: 'https://chat.deepseek.com/',    tip: '国内直连、免费，长文本理解强' },
+  { name: '豆包',     url: 'https://www.doubao.com/chat/',  tip: '字节出品，支持图片识别' },
+  { name: 'Kimi',     url: 'https://kimi.moonshot.cn/',     tip: '月之暗面，长文档与截图整理好' },
+  { name: '腾讯元宝', url: 'https://yuanbao.tencent.com/',  tip: '腾讯出品，支持图片' },
+  { name: '通义千问', url: 'https://www.tongyi.com/',       tip: '阿里出品，图文能力均衡' }
+];
+
+/* 统一的 OpenAI 兼容调用：content 为消息内容数组（可含图片节点），返回模型输出的文本 */
+async function aiPost(cfg, content, timeoutMs){
+  const ms = timeoutMs || 90000;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(cfg.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.key },
+      body: JSON.stringify({ model: cfg.model, temperature: 0, messages: [{ role: 'user', content }] }),
+      signal: ctl.signal
+    });
+    const txt = await r.text();
+    if (!r.ok){
+      let m = 'HTTP ' + r.status;
+      try { const j = JSON.parse(txt); m = (j.error && j.error.message) || j.message || m; } catch (e){}
+      throw new Error(m);
+    }
+    let j; try { j = JSON.parse(txt); } catch (e){ throw new Error('接口没返回 JSON（地址可能填成了网页而不是接口）'); }
+    const c = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+    const text = Array.isArray(c) ? c.map(x => (x && x.text) || '').join('') : String(c || '');
+    if (!text) throw new Error('接口没有返回内容');
+    return text;
+  } catch (e){
+    if (e && e.name === 'AbortError') throw new Error('请求超时（' + Math.round(ms / 1000) + ' 秒），请检查网络或换更快的模型');
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+async function aiRecognize(dataUrl, cfg, timeoutMs){
+  return aiPost(cfg, [
+    { type: 'text', text: AI_PROMPT },
+    { type: 'image_url', image_url: { url: dataUrl } }
+  ], timeoutMs || 90000);
+}
+/* 测试接口：发一条极小的纯文本请求，验证 地址 / Key / 模型名 是否能通。
+   放在"选完图片才发现 Key 填错"之前，省一次白等。 */
+async function aiProbe(cfg){
+  return aiPost(cfg, [{ type: 'text', text: '只回复两个字：可用' }], 20000);
+}
+/* 从模型输出里抠出 JSON（容忍 ```json 代码块或前后杂字） */
+function aiExtractJSON(text){
+  let s = String(text).trim().replace(/^```[a-zA-Z]*\s*/, '').replace(/\s*```$/, '');
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a >= 0 && b > a) s = s.slice(a, b + 1);
+  return JSON.parse(s);
+}
+/* 模型返回 → 统一中转格式 */
+function aiToCourses(parsed, total){
+  const arr = Array.isArray(parsed) ? parsed : ((parsed && (parsed.courses || parsed.data || parsed.list)) || []);
+  const rows = [], warnings = [];
+  (Array.isArray(arr) ? arr : []).forEach((it, i) => {
+    if (!it) return;
+    const name = String(it.name || it.course || it.title || '').trim();
+    if (!name){ warnings.push('第 ' + (i + 1) + ' 条缺少课程名，已跳过'); return; }
+    const day = impDay(it.day != null ? it.day : it.weekday);
+    let rng = null;
+    if (it.start != null && it.end != null){
+      const a = impMin(it.start), b = impMin(it.end);
+      if (a != null && b != null) rng = { start: a, end: b };
+    }
+    if (!rng && (it.time || it.period)) rng = impRange(String(it.time || it.period));
+    if (!rng && it.start != null) rng = impRange(String(it.start));
+    if (day == null || !rng){ warnings.push('第 ' + (i + 1) + ' 条时间或星期无法识别，已跳过：' + name); return; }
+    rows.push({ name, teacher: String(it.teacher || '').trim(), note: String(it.note || '').trim(),
+      sessions: [{ day, start: rng.start, end: rng.end, location: String(it.location || it.room || '').trim(),
+                   weeks: impWeeks(it.weeks != null ? it.weeks : it.weekRange, total) }] });
+  });
+  return { courses: impMerge(rows), warnings };
+}
+
+/* 识别结果确认：把 AI 结果以「统一格式」摊开，允许手动改完再导入。
+   图片识别最容易出问题的就是个别格子认错，给一层可编辑的中间结果，
+   比直接拍板导入可靠得多（改了哪一门、哪一行都看得见）。 */
+function aiResultDialog(res, onRetry){
+  const total = (state.settings && state.settings.totalWeeks) || 20;
+  const courses0 = res.courses || [];
+  const warns0 = res.warnings || [];
+
+  openModal('识别结果确认',
+    `<div class="hint" style="margin-bottom:8px">
+       下面是 AI 识别出的<b>统一格式</b>结果，可直接修改：改错课名、删多余行、补周次都行。
+       改完点下方按钮导入。<b>day</b> 用 1–7 表示周一至周日，<b>start / end</b> 可写
+       24 小时制文本（如 "08:00"），也可直接写分钟数（如 480 即 08:00）。
+     </div>
+     <textarea class="inp" id="aiJsonBox" rows="9" spellcheck="false"
+       style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+     <div class="hint" id="aiCnt" style="margin-top:8px"></div>`,
+    `<button class="btn" id="aiBack">重新识别</button>
+     <button class="btn" id="aiNew">新建一份</button>
+     <div class="spacer"></div>
+     <button class="btn" id="aiAppend">追加到当前</button>
+     <button class="btn primary" id="aiReplace">覆盖当前</button>`);
+
+  const box = $('#aiJsonBox');
+  box.value = JSON.stringify(courses0, null, 2);
+
+  /* 实时校验并统计：让"改坏了"立刻可见，而不是点导入才报错 */
+  const stat = () => {
+    const el = $('#aiCnt'); if (!el) return null;
+    let r = null;
+    try { r = impParseUnified(box.value, total); }
+    catch (e){ el.textContent = '⚠ ' + ((e && e.message) || e); el.style.color = 'var(--danger,#e5484d)'; return null; }
+    const nS = r.courses.reduce((a, c) => a + c.sessions.length, 0);
+    el.textContent = '可导入 ' + r.courses.length + ' 门课程 · ' + nS + ' 个时间段'
+      + (r.warnings.length ? '（' + r.warnings.length + ' 条将被跳过：' + r.warnings[0] + '）' : '');
+    el.style.color = r.warnings.length ? 'var(--danger,#e5484d)' : 'var(--muted)';
+    return r;
+  };
+  const el0 = $('#aiCnt');
+  box.addEventListener('input', stat);
+  stat();   /* 初始就显示"可导入 N 门 · M 个时间段"，而不是让用户先改一处才看到统计 */
+  if (el0 && warns0.length){
+    el0.textContent += '（识别阶段另有 ' + warns0.length + ' 条未能识别，已跳过：' + warns0[0] + '）';
+    el0.style.color = 'var(--danger,#e5484d)';
+  }
+
+  const commit = mode => {
+    const r = stat();
+    if (!r){ toast('请先修正 JSON 格式'); return; }
+    if (!r.courses.length){ toast('没有可导入的课程'); return; }
+    const n = impCommit(r.courses, mode);
+    closeModal();
+    toast(mode === 'new' ? ('已新建一份课表，导入 ' + n + ' 门') : ('已导入 ' + n + ' 门课程'));
+  };
+  $('#aiBack').onclick    = () => { if (onRetry) onRetry(); else closeModal(); };
+  $('#aiNew').onclick     = () => commit('new');
+  $('#aiAppend').onclick  = () => commit('append');
+  $('#aiReplace').onclick = () => commit('replace');
+}
+
+/* =====================================================================
+   一键导入弹窗
+   ===================================================================== */
+/* startTab: 'img' 时直接落在「图片识别」标签页（设置里的 AI 入口用它一跳直达） */
+/* ---------------------------------------------------------------------
+   「AI 整理课表」面板
+   ---------------------------------------------------------------------
+   不填任何接口也能用 AI：复制提示词 → 在外部 AI 里连同课表发给它
+   → 把返回的 JSON 粘回「一键导入课表」。
+   跳转只用纯 Web 手段（window.open → a[target=_blank] → location.href），
+   三级兜底 + 明确提示，避免 WebView 里出现"点了没反应"。
+   --------------------------------------------------------------------- */
+function aiListPromptText(){
+  const s = state && state.settings;
+  return (s && typeof s.aiListPrompt === 'string' && s.aiListPrompt.trim()) ? s.aiListPrompt : AI_LIST_PROMPT;
+}
+/* 复制文本：navigator.clipboard 在部分 WebView / 非安全上下文下不可用，带 execCommand 兜底 */
+function copyText(text){
+  return new Promise(resolve => {
+    const fallback = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = !!(document.execCommand && document.execCommand('copy'));
+        document.body.removeChild(ta);
+        resolve(ok);
+      } catch (e) { resolve(false); }
+    };
+    try {
+      const cb = navigator.clipboard;
+      if (cb && cb.writeText && window.isSecureContext !== false){
+        cb.writeText(text).then(() => resolve(true), fallback);
+        return;
+      }
+    } catch (e) {}
+    fallback();
+  });
+}
+/* 打开外部站点：逐级降级，返回是否已触发打开动作 */
+function openExternal(url){
+  try { if (window.open(url, '_blank', 'noopener')) return true; } catch (e) {}
+  try {
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    return true;
+  } catch (e) {}
+  try { location.href = url; } catch (e) {}
+  return false;
+}
+function openAiList(){
+  openModal('AI 整理课表', `
+    <div class="hint" style="line-height:1.8;margin-bottom:10px">
+      不填任何接口也能用 AI：<b>①</b> 复制下面的提示词 →
+      <b>②</b> 打开一个 AI，把提示词和你的课表（<b>截图</b>或从教务系统复制的<b>文字</b>）一起发过去 →
+      <b>③</b> 把 AI 返回的 JSON 粘回「<b>一键导入课表</b>」。
+    </div>
+    <textarea class="inp" id="aiListText" rows="7" spellcheck="false"
+      style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;line-height:1.5"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn primary" id="aiListCopy" style="flex:1">📋 复制提示词</button>
+      <button class="btn" id="aiListReset">恢复默认</button>
+    </div>
+    <div class="hint" style="margin:14px 0 6px">打开 AI（会先把提示词复制到剪贴板）</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${AI_LIST_PLATFORMS.map((p, i) => `<button class="btn" data-ailist="${i}" title="${esc(p.tip)}">${esc(p.name)}</button>`).join('')}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn primary" id="aiListGo" style="flex:1">去粘贴导入 →</button>
+    </div>
+    <div class="hint" id="aiListState" style="margin-top:10px"></div>`,
+    `<div class="spacer"></div><button class="btn" data-close>关闭</button>`);
+
+  const ta = $('#aiListText');
+  const say2 = (t, bad) => {
+    const el = $('#aiListState');
+    if (el){ el.textContent = t || ''; el.style.color = bad ? 'var(--danger,#e5484d)' : ''; }
+  };
+  ta.value = aiListPromptText();
+
+  /* 改动即存（防抖）；改回与默认一致时清空，回到内置默认 */
+  let t1 = null;
+  ta.oninput = () => {
+    clearTimeout(t1);
+    t1 = setTimeout(() => {
+      state.settings.aiListPrompt = (ta.value.trim() === AI_LIST_PROMPT) ? '' : ta.value;
+      save();
+    }, 500);
+  };
+
+  $('#aiListCopy').onclick = async () => {
+    const ok = await copyText(ta.value);
+    say2(ok ? '提示词已复制，去粘给 AI 吧' : '复制失败：请长按上面的文字手动全选复制', !ok);
+  };
+
+  $('#aiListReset').onclick = () => {
+    ta.value = AI_LIST_PROMPT;
+    state.settings.aiListPrompt = '';
+    save();
+    say2('已恢复默认提示词');
+  };
+
+  /* 平台跳转：先复制提示词，再尽力打开——打不开也把地址亮出来 */
+  $('#mBody').querySelectorAll('[data-ailist]').forEach(b => {
+    b.onclick = async () => {
+      const p = AI_LIST_PLATFORMS[+b.dataset.ailist];
+      if (!p) return;
+      const ok = await copyText(ta.value);
+      say2((ok ? '提示词已复制 · ' : '提示词未能自动复制，请手动复制 · ')
+        + '正在打开 ' + p.name + '；若没跳转，请手动访问 ' + p.url.replace(/^https:\/\//, ''));
+      openExternal(p.url);
+    };
+  });
+
+  $('#aiListGo').onclick = () => { closeModal(); setTimeout(() => openImport(), 80); };
+}
+
+function openImport(startTab){
+  openModal('一键导入课表', `
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn primary" id="impTabText" style="flex:1">文本 / 文件</button>
+      <button class="btn" id="impTabImg" style="flex:1">图片识别</button>
+    </div>
+    <div id="impPaneText">
+      <div class="hint" style="margin-bottom:8px">
+        支持 <b>JSON 备份</b>、<b>CSV / Excel 复制粘贴</b>、<b>ICS 日历</b>、<b>纯文本</b>。<br>
+        在 Excel 里选中区域 <b>Ctrl+C</b> 后直接粘贴到下框即可。表头建议含：课程、星期、开始、结束、地点、教师（周次可选）。
+      </div>
+      <textarea class="inp" id="impText" rows="6" placeholder="高等数学&#9;周一&#9;08:00&#9;09:40&#9;教一101&#9;张老师&#9;1-16&#10;大学英语&#9;周三&#9;10:00&#9;11:40&#9;教二203&#9;李老师&#9;单周" style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12.5px"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn primary" id="impParse" style="flex:1">解析粘贴内容</button>
+        <button class="btn" id="impFileBtn" style="flex:1">选择文件</button>
+      </div>
+      <input type="file" id="impFile" accept=".json,.csv,.tsv,.ics,.txt,text/*" style="display:none">
+    </div>
+    <div id="impPaneImg" style="display:none">
+      <div class="hint" style="margin-bottom:8px">
+        把课表<b>截图</b>或<b>拍照</b>交给 AI 识别，自动整理成统一格式，确认后再入库。<br>
+        需要填一个支持图片的 <b>OpenAI 兼容接口</b>（下面已带常用服务商预设）。
+        <b>密钥只存在本机浏览器</b>，不会发往你配置的这个接口以外的任何服务器。
+      </div>
+      <select class="inp" id="aiPreset" style="width:100%;box-sizing:border-box;margin-bottom:6px">
+        ${AI_PRESETS.map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join('')}
+        <option value="-1">自定义…</option>
+      </select>
+      <input class="inp" id="aiUrl" placeholder="接口地址 …/v1/chat/completions" style="width:100%;box-sizing:border-box;margin-bottom:6px">
+      <input class="inp" id="aiModel" list="aiModelList" placeholder="模型名（需支持图片输入）" style="width:100%;box-sizing:border-box;margin-bottom:6px">
+      <datalist id="aiModelList"></datalist>
+      <input class="inp" id="aiKey" type="password" placeholder="API Key（只存在本机）" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn" id="impProbe" style="flex:1">测试接口</button>
+        <button class="btn" id="impCfgClear" style="flex:1">清除密钥</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn primary" id="impImgCam" style="flex:1">📷 拍照识别</button>
+        <button class="btn primary" id="impImgBtn" style="flex:1">🖼 选图识别</button>
+      </div>
+      <input type="file" id="impImgCamIn" accept="image/*" capture="environment" style="display:none">
+      <input type="file" id="impImg" accept="image/*" multiple style="display:none">
+      <div id="impThumbs" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px"></div>
+    </div>
+    <div class="hint" id="impState" style="margin-top:10px"></div>`,
+    `<div class="spacer"></div><button class="btn" data-close>关闭</button>`);
+
+  const impSay = (t, bad) => { const el = $('#impState'); if (el){ el.textContent = t || ''; el.style.color = bad ? 'var(--danger,#e5484d)' : ''; } };
+  const totalWeeks = () => (state.settings && state.settings.totalWeeks) || 20;
+
+  /* 预览 + 合并/覆盖/新建 */
+  const finish = async res => {
+    const courses = res.courses || [];
+    if (!courses.length){ impSay((res.warnings && res.warnings.join('；')) || '没有解析到课程', true); return; }
+    const nS = courses.reduce((a, c) => a + c.sessions.length, 0);
+    const prev = courses.slice(0, 6).map(c => {
+      const s = c.sessions[0] || {};
+      return '· ' + (DAY_NAMES[s.day] || '') + ' ' + fmt(s.start) + '-' + fmt(s.end) + '  ' + c.name + (s.location ? ' @ ' + s.location : '');
+    }).join('<br>');
+    const more = courses.length > 6 ? '<br>… 另有 ' + (courses.length - 6) + ' 门' : '';
+    const warn = (res.warnings && res.warnings.length) ? '<br><br><span style="color:var(--muted)">已跳过 ' + res.warnings.length + ' 条无法识别的记录</span>' : '';
+    const r = await askModal('确认导入',
+      '解析到 <b>' + courses.length + '</b> 门课程、共 <b>' + nS + '</b> 个时间段：<br><br>' + prev + more + warn,
+      [{ label: '取消', value: 'no' }, { label: '新建一份', value: 'new' }, { label: '追加', value: 'append' }, { label: '覆盖当前', value: 'replace', cls: 'primary' }]);
+    if (!r || r === 'no') return;
+    const n = impCommit(courses, r);
+    closeModal();
+    toast('已导入 ' + n + ' 门课程');
+  };
+  /* JSON 备份：按整份课表导入 */
+  const finishPeople = async res => {
+    const ps = res.people || [];
+    const nC = ps.reduce((a, p) => a + p.courses.length, 0);
+    if (!nC){ impSay('文件里没有课程数据', true); return; }
+    const r = await askModal('确认导入',
+      '文件包含 <b>' + ps.length + '</b> 份课表、共 <b>' + nC + '</b> 门课程。',
+      [{ label: '取消', value: 'no' }, { label: '合并', value: 'merge' }, { label: '覆盖', value: 'replace', cls: 'primary' }]);
+    if (!r || r === 'no') return;
+    const got = impCommitPeople(ps, r);
+    closeModal();
+    toast('已导入 ' + got.p + ' 份课表 · ' + got.c + ' 门课程');
+  };
+
+  /* 标签切换 */
+  const tab = kind => {
+    const isImg = kind === 'img';
+    $('#impTabText').className = 'btn' + (isImg ? '' : ' primary');
+    $('#impTabImg').className = 'btn' + (isImg ? ' primary' : '');
+    $('#impPaneText').style.display = isImg ? 'none' : '';
+    $('#impPaneImg').style.display = isImg ? '' : 'none';
+    impSay('');
+  };
+  $('#impTabText').onclick = () => tab('text');
+  $('#impTabImg').onclick = () => tab('img');
+  if (startTab === 'img') tab('img');
+
+  /* 文本/文件 */
+  $('#impParse').onclick = async () => {
+    try {
+      const res = impDetect($('#impText').value, '', totalWeeks());
+      if (res.kind === 'json') return finishPeople(res);
+      await finish(res);
+    } catch (err){ impSay('解析失败：' + ((err && err.message) || err), true); }
+  };
+  $('#impFileBtn').onclick = () => $('#impFile').click();
+  $('#impFile').addEventListener('change', async e => {
+    const f = (e.target.files || [])[0]; e.target.value = '';
+    if (!f) return;
+    impSay('正在解析 ' + f.name + ' …');
+    try {
+      const res = impDetect(await f.text(), f.name, totalWeeks());
+      if (res.kind === 'json') return finishPeople(res);
+      await finish(res);
+    } catch (err){ impSay('解析失败：' + ((err && err.message) || err), true); }
+  });
+
+  /* ---------------------- 图片识别（视觉大模型） ---------------------- */
+  const cfgOf = () => ({
+    url:   ($('#aiUrl')   ? $('#aiUrl').value   : '').trim(),
+    model: ($('#aiModel') ? $('#aiModel').value : '').trim(),
+    key:   ($('#aiKey')   ? $('#aiKey').value   : '').trim()
+  });
+  const cfgReady = () => {
+    const c = cfgOf();
+    if (!c.url || !c.model || !c.key){
+      impSay('请先填好接口地址、模型名和 API Key（不确定能不能用，可先点「测试接口」）', true);
+      return null;
+    }
+    return c;
+  };
+  /* 预设 → 地址 / 模型 / 模型候选清单 */
+  const applyPreset = i => {
+    const p = AI_PRESETS[i]; if (!p) return;
+    $('#aiUrl').value = p.url; $('#aiModel').value = p.model;
+    $('#aiModelList').innerHTML = (p.models || []).map(m => `<option value="${esc(m)}"></option>`).join('');
+  };
+  const savedCfg = aiCfg();
+  $('#aiPreset').onchange = () => {
+    const i = +$('#aiPreset').value;
+    if (i >= 0) applyPreset(i);
+  };
+  if (savedCfg.url || savedCfg.model || savedCfg.key){
+    $('#aiUrl').value   = savedCfg.url || '';
+    $('#aiModel').value = savedCfg.model || '';
+    $('#aiKey').value   = savedCfg.key || '';
+    const pi = (savedCfg.preset != null && savedCfg.preset !== '') ? +savedCfg.preset : -1;
+    $('#aiPreset').value = String(pi);
+    if (pi >= 0 && AI_PRESETS[pi]) $('#aiModelList').innerHTML = (AI_PRESETS[pi].models || []).map(m => `<option value="${esc(m)}"></option>`).join('');
+  } else {
+    $('#aiPreset').value = String(AI_DEFAULT_PRESET);
+    applyPreset(AI_DEFAULT_PRESET);
+  }
+  /* 缩略图：先让用户确认"图没选错"，再去等模型结果 */
+  const showThumbs = files => {
+    const wrap = $('#impThumbs'); if (!wrap) return;
+    wrap.innerHTML = '';
+    files.slice(0, 6).forEach(f => {
+      const u = URL.createObjectURL(f);
+      const im = document.createElement('img');
+      im.alt = ''; im.src = u;
+      im.style.cssText = 'width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--line)';
+      im.onload = () => URL.revokeObjectURL(u);
+      wrap.appendChild(im);
+    });
+    if (files.length > 6){
+      const s = document.createElement('span');
+      s.className = 'hint'; s.textContent = '+' + (files.length - 6) + ' 张';
+      wrap.appendChild(s);
+    }
+  };
+
+  /* 识别（可重入：失败后改完 Key 再试、或点「重新识别」都走这里） */
+  const runAi = async files => {
+    if (!files || !files.length) return;
+    const cfg = cfgReady(); if (!cfg) return;
+    aiSaveCfg(Object.assign({}, cfg, { preset: $('#aiPreset').value }));
+    showThumbs(files);
+    const total = totalWeeks(), all = [], warns = [];
+    try {
+      for (let i = 0; i < files.length; i++){
+        impSay(files.length > 1
+          ? ('正在识别第 ' + (i + 1) + '/' + files.length + ' 张…（首次调用通常比较慢）')
+          : '正在识别…（图片越大越慢，请稍候）');
+        const dataUrl = await aiShrinkImage(files[i]);
+        const text = await aiRecognize(dataUrl, cfg, 90000);
+        const res = aiToCourses(aiExtractJSON(text), total);
+        all.push(...res.courses); warns.push(...(res.warnings || []));
+      }
+    } catch (err){
+      _impPendingImgs = files;   /* 保留本次图片：修好 Key / 网络后可直接重试 */
+      impSay('识别失败：' + ((err && err.message) || err) + '。图片已保留，可直接再点一次「选图识别」重试。', true);
+      return;
+    }
+    impSay('识别完成，请在弹窗里确认或修正结果…');
+    aiResultDialog({ courses: impMerge(all), warnings: warns }, () => {
+      _impPendingImgs = files; closeModal(); openImport('img');
+    });
+  };
+
+  $('#impProbe').onclick = async () => {
+    const cfg = cfgReady(); if (!cfg) return;
+    const b = $('#impProbe'), old = b.textContent;
+    b.disabled = true; b.textContent = '测试中…';
+    impSay('正在测试接口…');
+    try {
+      const out = await aiProbe(cfg);
+      aiSaveCfg(Object.assign({}, cfg, { preset: $('#aiPreset').value }));
+      impSay('接口可用 ✓ 模型返回：' + String(out).trim().slice(0, 40));
+    } catch (err){
+      impSay('接口不通：' + ((err && err.message) || err), true);
+    } finally { b.disabled = false; b.textContent = old; }
+  };
+  $('#impCfgClear').onclick = () => {
+    aiSaveCfg({});
+    $('#aiKey').value = '';
+    impSay('已清除本机保存的密钥（下次需要重新填）');
+  };
+  $('#impImgCam').onclick = () => { if (cfgReady()) $('#impImgCamIn').click(); };
+  $('#impImgBtn').onclick = () => { if (cfgReady()) $('#impImg').click(); };
+  const onPick = async e => {
+    const files = [...(e.target.files || [])]; e.target.value = '';
+    if (files.length) await runAi(files);
+  };
+  $('#impImgCamIn').addEventListener('change', onPick);
+  $('#impImg').addEventListener('change', onPick);
+
+  /* 桌面端顺手：截图后在弹窗内直接 Ctrl+V，图片转交 AI 识别（纯文本粘贴仍走原逻辑）。
+     用 onpaste 赋值而非 addEventListener，避免弹窗反复打开时叠加监听。 */
+  $('#mBody').onpaste = e => {
+    if (!document.getElementById('impText')) return;      /* 弹窗已不是导入弹窗 */
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    const files = [];
+    for (let i = 0; i < items.length; i++){
+      const it = items[i];
+      if (it.kind === 'file' && /^image\//.test(it.type || '')){
+        const f = it.getAsFile(); if (f) files.push(f);
+      }
+    }
+    if (!files.length) return;                              /* 不是图片 → 不动，照旧粘贴文本 */
+    e.preventDefault();
+    tab('img');
+    const c = cfgOf();
+    if (!c.url || !c.model || !c.key){
+      impSay('检测到粘贴的图片，但识别接口还没配好。填好上面的地址 / 模型 / Key 后，再粘贴一次或点「选图识别」即可。', true);
+      return;
+    }
+    runAi(files);
+  };
+
+  /* 从「重新识别」回到这里时，带着上次的图片自动再跑一次 */
+  if (startTab === 'img' && _impPendingImgs){
+    const f = _impPendingImgs; _impPendingImgs = null;
+    setTimeout(() => runAi(f), 60);
+  }
+}
 
 /* =====================================================================
    导出 PNG（自绘 SVG，无需联网 / 无第三方依赖）
@@ -3068,10 +4094,16 @@ document.addEventListener('click', e => { const el = e.target.closest && e.targe
 /* =====================================================================
    绑定 & 初始化
    ===================================================================== */
+/* 视图带：只切换"当前视图"，**不覆盖**「默认视图」。
+   否则临时看一眼日视图，下次打开就默认成日视图了 —— 这正是"打开不是周视图"的成因之一。
+   要把某个视图固定为打开时的视图，去 设置 → 默认视图。 */
 $('#viewSeg').onclick = e => {
   const b = e.target.closest('button'); if (!b) return;
-  ui.view = b.dataset.view;
-  state.settings.view = ui.view; save(); render();
+  const v = b.dataset.view;
+  if (ui.view === v) return;
+  ui.view = v;
+  if (v === 'day' && !visibleDays().includes(ui.day)) ui.day = visibleDays()[0];
+  render();
 };
 $('#daySelect').onchange = e => {
   ui.day = +e.target.value; render();
@@ -3124,6 +4156,18 @@ function syncViewSegLabels(){
     if (t && b.textContent !== t) b.textContent = t;
   });
 }
+/* 把"非首屏必需"的工作挪到首屏绘制之后再执行：
+   冷启动时主线程与网络连接都最紧张，天气/定位/云同步这类后台事务若与首次渲染抢资源，
+   体感就是"打开要等一下"。双 rAF 保证首帧已经画完，再交给空闲回调。 */
+function afterPaint(fn, delay){
+  const run = () => { try { fn(); } catch (e) {} };
+  const later = () => {
+    if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 2000 });
+    else setTimeout(run, 60);
+  };
+  if (window.requestAnimationFrame) requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(later, delay || 0)));
+  else setTimeout(later, delay || 0);
+}
 /* 启动加载界面：主界面渲染完成后淡出。幂等，可重复调用 */
 function hideSplash(){
   const s = document.getElementById('splash');
@@ -3140,22 +4184,34 @@ function syncTopbarH(){
   syncViewSegLabels();
 }
 
-/* 小屏：周视图太挤时退回日视图；列表视图在任何尺寸下都保留 */
+/* 进入应用时使用「默认视图」（出厂默认：周视图）。
+   旧实现会在窄屏把周视图强制降级成日视图，于是"每次打开都变成日视图"——
+   即使设置里存的就是 week 也进不去。已去掉：周视图在窄屏由 CSS 自适应（列宽按百分比），
+   需要看单天时用户自己在视图带上切「日」即可。
+   要改进入时的视图，用 设置 → 默认视图（写入 state.settings.view）。 */
 function initView(){
-  const saved = state.settings.view;
-  if (window.innerWidth < 860 && saved === 'week') ui.view = 'day';
-  else ui.view = saved || 'week';
+  ui.view = state.settings.view || 'week';
   if (ui.view === 'day' && !visibleDays().includes(ui.day)) ui.day = visibleDays()[0];
 }
 
+/* ---------------------------------------------------------------------
+   启动阶段：本地优先 —— 先出首屏，再在后台做网络与定位。
+   若本页是"即将被新版整份替换"的内置版（window.__hotSwapPending），整段跳过：
+   渲染结果会被 document.open() 丢进垃圾桶，网络请求与定时器却会留下并与新文档重复
+   （旧实现因此每次打开都发两轮请求、渲染两遍，还留下指向已销毁 DOM 的定时器）。
+   --------------------------------------------------------------------- */
+if (!window.__hotSwapPending){
 state = load();
 initView();
 render();
+/* 首屏就绪：更新看门狗据此判断"新版真的跑起来了"，比等主脚本跑到最后一行可靠
+   （旧实现的判据在最后一行，慢机上 8 秒预算偏紧，会被误判成启动失败） */
+window.__bootOk = 1;
 scheduleNotifySoon();
-/* 天气初始化：先读缓存，若无则自动定位；若已有数据也做一次静默刷新 */
+/* 天气初始化：先读缓存（同步、便宜）；定位 + 天气请求挪到首屏之后再发 */
 weatherLoad();
 if (weather.lat != null && weather.lon != null) {
-  applyGeoAndRefresh();
+  afterPaint(() => applyGeoAndRefresh());
 }
 /* 打开页面后复查一次定位权限：还没授权就再提醒一次（带频率控制） */
 setTimeout(() => { geoNagCheck(); }, 3000);
@@ -3166,6 +4222,7 @@ setInterval(() => {
   if (document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
   if (ui.view === 'list') renderList(); else renderBoard();
 }, 60000);
+}
 
 /* =====================================================================
    云同步（Supabase REST 直连 —— 不引入任何 SDK）
@@ -3179,7 +4236,14 @@ const CLOUD_RM_LS = 'course-cloud-rm-v1';
 const CLOUD_DEFAULT_URL = 'https://mfrlinxxbtovltufwprw.supabase.co';
 /* anon public key：按 Supabase 的设计本就公开，真正的权限由数据库 RLS 规则控制 */
 const CLOUD_DEFAULT_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1mcmxpbnh4YnRvdmx0dWZ3cHJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NjE1NTUsImV4cCI6MjEwNDQzNzU1NX0.zYva2ZbK0RovAY8ddrha5dUVYnf0zcjGBiagSAXQqIE';
-const cloud = { cfg: { url: CLOUD_DEFAULT_URL, key: CLOUD_DEFAULT_KEY }, session: null, profile: null, subs: [], status: 'off', error: '' };
+const cloud = { cfg: { url: CLOUD_DEFAULT_URL, key: CLOUD_DEFAULT_KEY }, session: null, profile: null, subs: [], status: 'off', error: '',
+  /* 同步元数据（随账号一起本地持久化），用于"数据没变不重复处理 / 短窗口不重复发请求"：
+     myAt      最近一次已应用的「我的课表」远端 updated_at —— 相同即视为无变化
+     subsSig   订阅列表 + 昵称/分享码 + 各目标 updated_at 的签名 —— 相同即跳过重建
+     lastSync  最近一次同步完成的时间戳
+     dirty     本地存在尚未推送成功的改动
+     inflight  是否已有同步在跑（并发去重，避免重复请求） */
+  meta: { myAt: null, subsSig: '', lastSync: 0, dirty: false, inflight: false } };
 let _cloudBusy = false, _pushT = 0;
 
 /* 记住账号密码：勾选后保存 {name, pass, auto}，打开云面板时静默登录一次 */
@@ -3200,10 +4264,11 @@ function cloudLoad(){
     cloud.session = o.session || null;
     cloud.profile = o.profile || null;
     cloud.subs = o.subs || [];
+    cloud.meta = Object.assign({ myAt: null, subsSig: '', lastSync: 0, dirty: false, inflight: false }, o.meta || {});
   } catch (e) {}
 }
 function cloudPersist(){
-  try { localStorage.setItem(CLOUD_LS, JSON.stringify({ cfg: cloud.cfg, session: cloud.session, profile: cloud.profile, subs: cloud.subs })); }
+  try { localStorage.setItem(CLOUD_LS, JSON.stringify({ cfg: cloud.cfg, session: cloud.session, profile: cloud.profile, subs: cloud.subs, meta: cloud.meta })); }
   catch (e) {}
 }
 const cloudUid = () => (cloud.session && cloud.session.user && cloud.session.user.id) || null;
@@ -3323,19 +4388,37 @@ async function cloudSaveNick(name){
 }
 async function cloudHello(){
   const uid = cloudUid();
-  try {
-    const r = await cAuto('/rest/v1/profiles?id=eq.' + uid + '&select=id,nickname,share_code');
-    cloud.profile = (r && r[0]) || null;
-  } catch (e){ cloud.profile = null; }
+  /* 档案（昵称/分享码）与课表数据互不依赖 → 并行请求，省掉一个串行来回 */
+  const profP = cAuto('/rest/v1/profiles?id=eq.' + uid + '&select=id,nickname,share_code')
+    .then(r => (r && r[0]) || null).catch(() => null);
+  try { _cloudBusy = true; await cloudPull(); cloud.status = 'on'; cloud.error = ''; }
+  catch (e){ cloud.status = 'error'; cloud.error = String(e.message || e); }
+  finally { _cloudBusy = false; }
+  cloud.profile = await profP;
+  cloud.meta.lastSync = Date.now(); cloud.meta.dirty = false;
   cloudPersist();
   /* 昵称是空的（老账号或异常）→ 用内部邮箱反解出的用户名补一次 */
   const derived = emailToName((cloud.session && cloud.session.user && cloud.session.user.email) || '');
   if (derived && !(cloud.profile && cloud.profile.nickname)) cloudSaveNick(derived);
-  try { _cloudBusy = true; await cloudPull(); cloud.status = 'on'; cloud.error = ''; }
-  catch (e){ cloud.status = 'error'; cloud.error = String(e.message || e); }
-  finally { _cloudBusy = false; }
   /* 登录成功后也复查一次定位权限 */
   setTimeout(() => { geoNagCheck(); }, 1500);
+}
+
+/* ---------------------------------------------------------------------
+   启动同步（本地优先）：解决"每次打开都重复请求、重复处理"的问题
+   · 首屏已用本地数据渲染（见文件末尾 state = load(); render()），这里只做后台静默同步
+   · 本地无未推送改动、且距上次成功同步不足 CLOUD_FRESH_MS → 直接跳过，不再发请求
+   · 否则按 updated_at 条件比对，只有远端真的变新时才应用并重渲染
+   · inflight 去重：已有同步在跑就不再并发重复发起
+   · 失败静默降级，本地照常用（手动「拉取」不受新鲜度窗口限制）
+   --------------------------------------------------------------------- */
+const CLOUD_FRESH_MS = 30000;
+function cloudBootSync(){
+  if (!cloudOn() || cloud.meta.inflight) return;
+  const fresh = !cloud.meta.dirty && cloud.meta.lastSync && (Date.now() - cloud.meta.lastSync) < CLOUD_FRESH_MS;
+  if (fresh){ cloud.status = 'on'; return; }
+  cloud.meta.inflight = true;
+  cloudHello().catch(() => {}).then(() => { cloud.meta.inflight = false; });
 }
 
 /* ---------------- 拉取 / 推送 ---------------- */
@@ -3348,21 +4431,33 @@ function applyCloudData(data){
   state.activeId = n.activeId;
   save(); render();
 }
+/* 返回 true 表示本次确实应用了云端新数据（调用方据此感知"有更新"） */
 async function cloudPull(){
-  const uid = cloudUid(); if (!uid) return;
+  const uid = cloudUid(); if (!uid) return false;
   const rows = await cAuto('/rest/v1/schedules?user_id=eq.' + uid + '&select=user_id,data,updated_at');
   const row = rows && rows[0];
   if (row && row.data && Array.isArray(row.data.people) && row.data.people.length){
+    /* 关键优化：远端 updated_at 与上次已应用的一致 → 数据没变，
+       直接跳过 applyCloudData（省掉 normalize + 落盘 + 重渲染的重活） */
+    if (row.updated_at && row.updated_at === cloud.meta.myAt){
+      await cloudSyncSubs();
+      return false;
+    }
+    const at = row.updated_at || null;
     _cloudBusy = true;
-    applyCloudData(row.data);
+    applyCloudData(row.data);   /* 应用成功后再推进 myAt，避免应用失败却误标"已同步" */
     _cloudBusy = false;
-  } else {
-    await cloudPush();   /* 云端还是空的 → 把本地这份传上去 */
+    cloud.meta.myAt = at;
+    await cloudSyncSubs();
+    return true;
   }
+  await cloudPush();   /* 云端还是空的 → 把本地这份传上去 */
   await cloudSyncSubs();
+  return true;
 }
 async function cloudPush(){
   const uid = cloudUid(); if (!uid) return;
+  const stamp = new Date().toISOString();
   const payload = {
     user_id: uid,
     data: {
@@ -3371,7 +4466,7 @@ async function cloudPush(){
       people: state.people.filter(p => !p.cloud).map(p => ({ id: p.id, name: p.name, courses: p.courses })),
       activeId: state.activeId
     },
-    updated_at: new Date().toISOString()
+    updated_at: stamp
   };
   await cAuto('/rest/v1/schedules?on_conflict=user_id', {
     method: 'POST',
@@ -3379,26 +4474,48 @@ async function cloudPush(){
     body: JSON.stringify(payload)
   });
   cloud.status = 'on'; cloud.error = '';
+  /* 记住本次写入的远端时间点：下次启动时它等于 myAt，就不会把刚推上去的数据又当成"新变化"重新拉取应用 */
+  cloud.meta.myAt = stamp; cloud.meta.dirty = false;
+  cloudPersist();
 }
 /* 本地有改动 → 1.5 秒后推一次（合并短时间内的连续修改） */
 function cloudSchedulePush(){
   if (!cloudOn() || _cloudBusy) return;
+  cloud.meta.dirty = true; cloudPersist();   /* 标记有待推送改动：即使本次没推成功，下次启动也会同步 */
   clearTimeout(_pushT);
-  _pushT = setTimeout(() => { cloudPush().catch(e => { cloud.status = 'error'; cloud.error = String(e.message || e); }); }, 1500);
+  _pushT = setTimeout(() => {
+    cloudPush()
+      .then(() => { cloud.meta.lastSync = Date.now(); cloudPersist(); })
+      .catch(e => { cloud.status = 'error'; cloud.error = String(e.message || e); });
+  }, 1500);
 }
 
 /* ---------------- 订阅（看同学的课表） ---------------- */
 async function cloudSyncSubs(){
-  const uid = cloudUid(); if (!uid) return;
+  const uid = cloudUid(); if (!uid) return false;
   const subs = await cAuto('/rest/v1/subscriptions?subscriber_id=eq.' + uid + '&select=target_id');
   const ids = (subs || []).map(s => s.target_id).filter(Boolean);
   cloud.subs = ids;
   let profs = [], scheds = [];
   if (ids.length){
     const inq = 'in.(' + ids.join(',') + ')';
-    profs  = await cAuto('/rest/v1/profiles?id=' + inq + '&select=id,nickname,share_code');
-    scheds = await cAuto('/rest/v1/schedules?user_id=' + inq + '&select=user_id,data,updated_at');
+    /* 档案与课表互不依赖 → 并行请求，少一个串行来回 */
+    const [pp, ss] = await Promise.all([
+      cAuto('/rest/v1/profiles?id=' + inq + '&select=id,nickname,share_code'),
+      cAuto('/rest/v1/schedules?user_id=' + inq + '&select=user_id,data,updated_at')
+    ]);
+    profs = pp || []; scheds = ss || [];
   }
+  /* 内容签名：订阅列表 + 各目标的昵称/分享码/updated_at。
+     签名与上次一致 → 同学课表没有任何变化，直接跳过下面的重建与重渲染 */
+  const sigOf = {};
+  (profs || []).forEach(p => sigOf[p.id] = p);
+  const schedAt = {};
+  (scheds || []).forEach(s => schedAt[s.user_id] = s.updated_at || '');
+  const sig = JSON.stringify(ids.map(i => [i, (sigOf[i] && sigOf[i].nickname) || '', (sigOf[i] && sigOf[i].share_code) || '', schedAt[i] || '']));
+  if (sig === cloud.meta.subsSig) return false;
+  cloud.meta.subsSig = sig;
+
   const pmap = {}; (profs || []).forEach(p => pmap[p.id] = p);
   (scheds || []).forEach(s => {
     const prof = pmap[s.user_id]; if (!prof || !s.data) return;
@@ -3418,9 +4535,11 @@ async function cloudSyncSubs(){
   });
   const keep = new Set(ids.map(i => 'c_' + i));
   state.people = state.people.filter(p => !p.cloud || keep.has(p.id));
+  if (!state.people.length) state.people = defaults().people;
   if (!state.people.some(p => p.id === state.activeId)) state.activeId = state.people[0].id;
   _cloudBusy = true; save(); render(); _cloudBusy = false;
   cloudPersist();
+  return true;
 }
 async function cloudSubscribe(code){
   const uid = cloudUid(); if (!uid) throw new Error('请先登录');
@@ -3704,6 +4823,22 @@ window.CourseSchedule = {
   on, emit, render,
   exportJSON, exportPNG,
   openEditor, openSettings,
+  /* 数据入口 / 出口 */
+  openImport, openIO, parseImport: impDetect, parseUnified: impParseUnified,
+  /* AI 识图（截图/拍照 → 统一格式 → 导入）：无配置时调用不会有副作用 */
+  ai: {
+    open: () => openImport('img'),
+    cfg: aiCfg, saveCfg: aiSaveCfg, probe: aiProbe,
+    recognize: aiRecognize, toCourses: aiToCourses, presets: AI_PRESETS
+  },
+  /* AI 整理课表（复制提示词 → 外部 AI → 粘回导入）：不需要任何接口配置 */
+  aiList: {
+    open: openAiList,
+    prompt: aiListPromptText,
+    defaultPrompt: () => AI_LIST_PROMPT,
+    platforms: AI_LIST_PLATFORMS,
+    copy: copyText
+  },
   /* 天气 */
   weather: {
     get: () => JSON.parse(JSON.stringify(weather)),
@@ -3723,9 +4858,14 @@ window.CourseSchedule = {
 };
 
 /* 启动时：若上次已登录，静默拉一次云端。失败就当没这回事，本地照常用 */
+if (!window.__hotSwapPending){
 cloudLoad();
-if (cloudOn()) cloudHello().catch(() => {});
+/* 本地优先：首屏已用本地数据渲染完毕，这里只做后台静默同步，并挪到首屏绘制之后——
+   冷启动时与渲染抢连接会明显拖慢"打开"的体感（弱网下更明显）。
+   新鲜度窗口 + updated_at 条件比对 + 并发去重，共同消除"每次打开都重复请求"。 */
+if (cloudOn()) afterPaint(() => cloudBootSync());
 else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，可跳过 */
+}
 
 /* =====================================================================
    应用内更新（打包 App 自检升级）
@@ -3739,10 +4879,11 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.09.11';
+const APP_VERSION = '2026.09.17.16';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
+const UPD_LS_HOT  = 'course-app-hot-html';
 
 function updIsApp(){
   return !!window.Capacitor || location.protocol === 'file:' ||
@@ -3754,29 +4895,308 @@ function updInfo(){
 function updSaveInfo(o){
   try { localStorage.setItem(UPD_LS_INFO, JSON.stringify(o)); } catch(e){}
 }
-/* manual=true 给可见反馈；自动检查全程静默，失败也不打扰 */
+/* 自动更新偏好：默认开启——发现新版即下载，并在弹窗倒计时后自动重启 */
+function updAutoPref(){
+  const i = updInfo();
+  return i.autoApply === undefined ? true : !!i.autoApply;
+}
+function updSetAuto(on){
+  updSaveInfo(Object.assign({}, updInfo(), { autoApply: !!on }));
+}
+/* 缓存里是否已经有"就是这个远程版本"的整份页面（有则只需重启，无需再下载） */
+function updHotReady(remote){
+  if (!remote) return false;
+  try {
+    const h = localStorage.getItem(UPD_LS_HOT) || '';
+    return updInfo().version === remote && h.length >= 20000;
+  } catch(e){ return false; }
+}
+/* 版本号形如 2026.09.17.13：逐段按数值比较，-1 更旧 / 0 相同 / 1 更新。
+   用于防止"页面已推新、version.json 还是旧的"时把 App 误降级。 */
+function updVerCmp(a, b){
+  const pa = String(a || '').split('.'), pb = String(b || '').split('.');
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++){
+    const x = parseInt(pa[i], 10) || 0, y = parseInt(pb[i], 10) || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/* ---------- 更新会话状态（单一弹窗，避免同时多个更新流程） ---------- */
+const _upd = { remote:'', note:'', phase:'idle', pct:0, count:0, err:'', auto:true, open:false, timer:0, seq:0 };
+let _updSnoozed = '';        /* 本次会话内已选择「稍后」的版本，避免反复弹 */
+let _updRestarting = false;  /* 重启进行中，防止重复触发 */
+
+/* ---------- 下载新版页面：分块读取，边下边报进度 ---------- */
+function updFetchNew(remote, onProgress){
+  return fetch(UPD_BASE + 'index.html?t=' + Date.now(), { cache: 'no-store' })
+    .then(r => {
+      if (!r.ok) throw new Error('下载失败 HTTP ' + r.status);
+      const total = +(r.headers.get('content-length') || 0);
+      /* 老内核不支持流式读取 → 整体读取，进度直接跳到 100% */
+      if (!r.body || typeof r.body.getReader !== 'function'){
+        return r.text().then(t => { if (onProgress) onProgress(1); return t; });
+      }
+      const reader = r.body.getReader();
+      const chunks = []; let got = 0;
+      const pump = () => reader.read().then(step => {
+        if (step.done) return;
+        chunks.push(step.value); got += step.value.length;
+        /* total 取不到时回调 -1，UI 显示"下载中…"的不确定态 */
+        if (onProgress) onProgress(total ? Math.min(0.99, got / total) : -1);
+        return pump();
+      });
+      return pump().then(() => {
+        const buf = new Uint8Array(got); let off = 0;
+        chunks.forEach(c => { buf.set(c, off); off += c.length; });
+        let txt = '';
+        try { txt = new TextDecoder('utf-8').decode(buf); } catch(e){ txt = ''; }
+        if (!txt){   /* 兜底：无 TextDecoder 时手工解码 */
+          let s = '';
+          for (let i = 0; i < buf.length; i += 8192) s += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+          try { txt = decodeURIComponent(escape(s)); } catch(e){ txt = s; }
+        }
+        if (onProgress) onProgress(1);
+        return txt;
+      });
+    })
+    .then(txt => {
+      if (!txt || txt.length < 20000) throw new Error('下载内容过短（' + (txt || '').length + ' 字符）');
+      if (txt.indexOf('APP_VERSION') < 0) throw new Error('下载内容不是课程表页面');
+      localStorage.setItem(UPD_LS_HOT, txt);
+      updSaveInfo(Object.assign({}, updInfo(), { version: remote, at: Date.now(), checkedAt: Date.now(), lastErr: '' }));
+      return txt;
+    });
+}
+
+/* ---------- 重启遮罩：避免用户看到"半死"的中间状态 ---------- */
+function updOverlay(title, tip){
+  let el = document.getElementById('updMask');
+  if (!el){
+    el = document.createElement('div');
+    el.id = 'updMask';
+    el.innerHTML = '<div class="upd-card"><div class="upd-spin"></div><b id="updMaskT"></b><small id="updMaskS"></small></div>';
+    document.body.appendChild(el);
+  }
+  const t = document.getElementById('updMaskT'); if (t) t.textContent = title || '';
+  const s = document.getElementById('updMaskS'); if (s) s.textContent = tip || '';
+}
+/* 统一重启入口：reload → replace(href) → Capacitor 原生重启，三重兜底 */
+function updRestart(){
+  if (_updRestarting) return;
+  _updRestarting = true;
+  updStopCountdown();
+  updOverlay('正在重启…', '新版马上生效');
+  let step = 0;
+  const go = () => {
+    step++;
+    try {
+      if (step === 1){ location.reload(); return; }
+      if (step === 2){ location.replace(location.href); return; }
+      const P = window.Capacitor && Capacitor.Plugins;
+      if (P && P.App && P.App.restart){ P.App.restart(); return; }
+      location.href = location.href;
+    } catch(e){}
+  };
+  go();
+  setTimeout(() => { if (_updRestarting) go(); }, 800);
+  setTimeout(() => { if (_updRestarting) go(); }, 2000);
+  /* 两种方式都失败（极少见）：撤掉遮罩，提示用户手动重开，别把界面锁死 */
+  setTimeout(() => {
+    if (!_updRestarting) return;
+    _updRestarting = false;
+    const m = document.getElementById('updMask'); if (m && m.parentNode) m.parentNode.removeChild(m);
+    toast('自动重启失败，请手动关闭应用后重新打开');
+  }, 4200);
+}
+
+/* ---------- 更新弹窗 ---------- */
+function updDialogAlive(){ return _upd.open && !$('#modal').hidden; }
+function updStopCountdown(){ if (_upd.timer){ clearInterval(_upd.timer); _upd.timer = 0; } }
+
+function updDialogPaint(){
+  if (!_upd.open) return;
+  const st = document.getElementById('updStatus');
+  const btn = document.getElementById('updGo');
+  const later = document.getElementById('updLater');
+  const bar = document.getElementById('updBar');
+  const wrap = document.getElementById('updBarWrap');
+  if (!st || !btn) return;
+  const pct = _upd.pct < 0 ? -1 : Math.round(_upd.pct * 100);
+  if (_upd.phase === 'downloading'){
+    st.textContent = pct < 0 ? '正在下载新版本…' : `正在下载新版本… ${pct}%`;
+    if (wrap) wrap.style.display = '';
+    if (bar) bar.style.width = (pct < 0 ? 32 : Math.max(6, pct)) + '%';
+    btn.disabled = true; btn.textContent = '下载中…';
+    /* 「稍后」保持可用：用户可以不打断当前操作，已下载的版本下次打开时自动生效 */
+    if (later) later.disabled = false;
+  } else if (_upd.phase === 'ready'){
+    st.textContent = _upd.auto
+      ? `新版已就绪，${_upd.count} 秒后自动重启`
+      : '新版已就绪，点下方按钮立即重启生效';
+    if (wrap) wrap.style.display = '';
+    if (bar) bar.style.width = '100%';
+    btn.disabled = false; btn.textContent = '立即重启';
+    if (later) later.disabled = false;
+  } else if (_upd.phase === 'error'){
+    st.textContent = '更新失败：' + _upd.err;
+    if (wrap) wrap.style.display = 'none';
+    btn.disabled = false; btn.textContent = '重试下载';
+    if (later) later.disabled = false;
+  } else {
+    st.textContent = '点击下方按钮下载新版并自动重启，旧数据与设置都会保留。';
+    if (wrap) wrap.style.display = 'none';
+    btn.disabled = false; btn.textContent = '立即更新并重启';
+    if (later) later.disabled = false;
+  }
+}
+
+/* 关闭弹窗（✕ / 稍后）：停止倒计时，本次会话不再打扰 */
+function updSnooze(){
+  const r = _upd.remote;
+  _upd.open = false; updStopCountdown();
+  if (r) _updSnoozed = r;
+  window._updOnClose = null;
+  if ($('#modal') && !$('#modal').hidden) closeModal();
+}
+/* 跳过此版本：持久化，自动检查不再提示（手动「检查更新」仍会提示） */
+function updSkipVersion(){
+  const r = _upd.remote;
+  updSaveInfo(Object.assign({}, updInfo(), { skipped: r }));
+  updSnooze();
+  toast('已跳过 ' + r + '，可在设置里手动更新');
+}
+
+function updStartCountdown(){
+  _upd.count = 5;
+  updStopCountdown();
+  updDialogPaint();
+  _upd.timer = setInterval(() => {
+    if (!updDialogAlive()){ updStopCountdown(); return; }   /* 用户已关弹窗 → 取消自动重启 */
+    _upd.count--;
+    if (_upd.count <= 0){ updStopCountdown(); updRestart(); return; }
+    updDialogPaint();
+  }, 1000);
+}
+
+/* auto=true 表示自动模式（用户已授权，下载完倒计时后自己重启） */
+function updStartDownload(auto){
+  if (_upd.phase === 'downloading') return;
+  const seq = ++_upd.seq;
+  _upd.phase = 'downloading'; _upd.pct = 0; _upd.err = ''; _upd.auto = !!auto;
+  updDialogPaint();
+  updFetchNew(_upd.remote, p => {
+    if (seq !== _upd.seq) return;
+    _upd.pct = p; updDialogPaint();
+  }).then(() => {
+    if (seq !== _upd.seq) return;
+    _upd.phase = 'ready'; _upd.pct = 1;
+    updDialogPaint();
+    if (_upd.auto){ updStartCountdown(); return; }
+    /* 手动模式：用户已点过「立即更新并重启」= 同意，稍留一瞬让进度条走满再重启 */
+    setTimeout(() => {
+      if (seq !== _upd.seq || !updDialogAlive()) return;
+      updStopCountdown(); updRestart();
+    }, 600);
+  }).catch(err => {
+    if (seq !== _upd.seq) return;
+    _upd.phase = 'error';
+    _upd.err = (err && err.message) ? err.message : String(err);
+    updSaveInfo(Object.assign({}, updInfo(), { checkedAt: Date.now(), lastErr: _upd.err }));
+    updDialogPaint();
+  });
+}
+
+function updDialogOpen(remote, note){
+  _upd.remote = String(remote || '');
+  _upd.note = note || '';
+  _upd.err = ''; _upd.pct = 0; _upd.open = true; _upd.seq++;
+  _upd.auto = updAutoPref();
+  _upd.phase = updHotReady(_upd.remote) ? 'ready' : 'idle';
+
+  const body = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <span class="upd-tag">当前 ${esc(APP_VERSION)}</span>
+      <span style="color:var(--muted)">→</span>
+      <span class="upd-tag new">新版 ${esc(_upd.remote)}</span>
+    </div>
+    ${_upd.note ? `<div class="hint" style="font-size:13px;color:var(--text);margin-bottom:10px">更新说明：${esc(_upd.note)}</div>` : ''}
+    <div id="updStatus" class="hint" style="font-size:13px;color:var(--text)"></div>
+    <div id="updBarWrap" style="display:none;height:6px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:10px">
+      <div id="updBar" style="height:100%;width:0;border-radius:99px;background:var(--accent);transition:width .18s"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:9px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line2)">
+      <button class="switch" id="updAutoBtn" aria-pressed="${_upd.auto}" title="开启后，检测到新版将自动下载并倒计时重启"></button>
+      <span class="hint" style="font-size:12.5px">以后自动更新（无需手动确认）</span>
+    </div>
+    <div class="hint" style="margin-top:10px">
+      <span class="upd-link" id="updSkip">跳过此版本，不再提示</span>
+    </div>`;
+  const foot = `<div class="spacer"></div>
+    <button class="btn" id="updLater">稍后</button>
+    <button class="btn primary" id="updGo">立即更新并重启</button>`;
+  openModal('发现新版本', body, foot);
+
+  $('#updGo').onclick = () => {
+    if (_upd.phase === 'ready'){ updStopCountdown(); updRestart(); return; }
+    updStartDownload(false);
+  };
+  $('#updLater').onclick = updSnooze;
+  $('#updSkip').onclick  = updSkipVersion;
+  const ab = $('#updAutoBtn');
+  if (ab) ab.onclick = () => {
+    _upd.auto = !_upd.auto;
+    ab.setAttribute('aria-pressed', String(_upd.auto));
+    updSetAuto(_upd.auto);
+    if (_upd.auto){
+      if (_upd.phase === 'idle') updStartDownload(true);       /* 刚开启：立刻下载 + 倒计时 */
+      else if (_upd.phase === 'ready') updStartCountdown();
+    } else {
+      updStopCountdown();
+      _upd.count = 0;
+    }
+    updDialogPaint();
+  };
+  /* 关闭弹窗（点遮罩 / ✕）等同于「稍后」：倒计时必须停掉 */
+  window._updOnClose = updSnooze;
+
+  updDialogPaint();
+  /* 自动模式：弹窗一出现就开始下载，下完进入倒计时 */
+  if (_upd.auto && _upd.phase === 'idle') updStartDownload(true);
+}
+
+/* 用户可能正开着课程编辑/设置等弹窗 → 等它关掉再提示更新，避免打断操作。tries≈60 秒 */
+function updWhenIdle(fn, tries){
+  if (tries === undefined) tries = 40;
+  const m = $('#modal');
+  if (!m || m.hidden){ fn(); return; }
+  if (tries <= 0) return;   /* 一直没空闲就放弃本次提示，下次启动再说 */
+  setTimeout(() => updWhenIdle(fn, tries - 1), 1500);
+}
+
+/* manual=true 给可见反馈；自动检查静默失败不打扰 */
 function updCheck(manual){
   if (!updIsApp()){ if (manual) toast('网页版打开即为最新，无需更新'); return; }
+  if (_upd.phase === 'downloading'){ if (manual) toast('正在更新中…'); return; }
   const cur = updInfo();
   return fetch(UPD_BASE + 'version.json?t=' + Date.now(), { cache: 'no-store' })
-    .then(r => { if (!r.ok) throw new Error('net'); return r.json(); })
+    .then(r => { if (!r.ok) throw new Error('网络异常 HTTP ' + r.status); return r.json(); })
     .then(m => {
       const remote = String(m.version || '');
-      if (!remote) throw new Error('空版本号');
-      if (remote === cur.version){
-        updSaveInfo(Object.assign({}, cur, { checkedAt: Date.now(), lastOk: remote, lastErr: '' }));
-        if (manual) toast('已是最新版本 ' + remote);
+      if (!remote) throw new Error('线上版本号为空');
+      updSaveInfo(Object.assign({}, cur, { checkedAt: Date.now(), lastOk: remote, lastErr: '' }));
+      /* 以"正在运行的版本"为基准比较，而不是上次下载记录，避免重复下载同一版 */
+      if (remote === APP_VERSION){ if (manual) toast('已是最新版本 ' + remote); return; }
+      if (updVerCmp(remote, APP_VERSION) < 0){
+        /* 线上反而更旧（页面推了、清单还没推的中间态）→ 不提示、更不降级 */
+        if (manual) toast('线上版本较旧（' + remote + '），无需更新');
         return;
       }
-      return fetch(UPD_BASE + 'index.html?t=' + Date.now(), { cache: 'no-store' })
-        .then(r => { if (!r.ok) throw new Error('下载页面失败 HTTP ' + r.status); return r.text(); })
-        .then(txt => {
-          if (!txt || txt.length < 20000) throw new Error('下载内容过短（' + (txt || '').length + ' 字符）');
-          if (txt.indexOf('APP_VERSION') < 0) throw new Error('下载内容不是课程表页面');
-          localStorage.setItem('course-app-hot-html', txt);
-          updSaveInfo(Object.assign({}, cur, { version: remote, at: Date.now(), note: m.note || '', checkedAt: Date.now(), lastErr: '' }));
-          toast('已下载新版 ' + remote + '，重启应用后生效');
-        });
+      if (!manual && updInfo().skipped === remote) return;    /* 已跳过该版本 */
+      if (!manual && _updSnoozed === remote) return;          /* 本次会话已选稍后 */
+      if (!manual){ updWhenIdle(() => updDialogOpen(remote, m.note)); return; }
+      updDialogOpen(remote, m.note);                          /* 手动检查：直接接管弹窗 */
     })
     .catch(err => {
       /* 记录真实错误原因，便于在设置里排查（以前只给一句笼统提示） */
@@ -3788,7 +5208,7 @@ function updCheck(manual){
 /* 丢弃已下载的新版本，回退到 App 内置版本（新版出问题时自救用） */
 function updRollback(){
   try {
-    localStorage.removeItem('course-app-hot-html');
+    localStorage.removeItem(UPD_LS_HOT);
     localStorage.removeItem('course-app-pending');
     const i = updInfo(); delete i.version; delete i.at;
     updSaveInfo(Object.assign({}, i, { lastErr: '' }));
@@ -3797,12 +5217,15 @@ function updRollback(){
 }
 function updAutoCheck(){
   if (!updIsApp()) return;
-  setTimeout(function(){ updCheck(false); }, 4000);   /* 让首屏先渲染完，不抢资源 */
+  setTimeout(function(){ updCheck(false); }, 3500);   /* 让首屏先渲染完，不抢资源 */
 }
 
+if (!window.__hotSwapPending){
 updAutoCheck();
 /* 能跑到这里说明当前版本启动正常，打上标记供引导脚本判断是否需要回滚；
-   同时插入 __upd_ok 标记，供更新引导里的“自愈看门狗”确认新版真的跑起来了。 */
+   同时插入 __upd_ok 标记，供更新引导里的“自愈看门狗”确认新版真的跑起来了。
+   必须等本页真正完成启动才写 course-app-ok：即将被替换的内置版若抢先写入自己的
+   版本号，下一轮启动就会把它判成"新版启动失败"，从而静默丢弃更新。 */
 try {
   localStorage.setItem(UPD_LS_OK, APP_VERSION);
   var __updOkEl = document.createElement('span');
@@ -3810,11 +5233,21 @@ try {
   __updOkEl.style.display = 'none';
   document.body.appendChild(__updOkEl);
 } catch(e){}
+}
+/* 收尾：对应文件开头的 (function(){ ... 见"为什么整段包在一个 IIFE 里" */
+}).call(window);
 </script>
 
-<!-- 注册 Service Worker：使 PWA 可离线使用、可安装到主屏/桌面 -->
+<!-- 注册 Service Worker：使 PWA 可离线使用、可安装到主屏/桌面。
+     App 内（Capacitor 壳）不注册：本地资源本身就是离线可用的，SW 只会多一层
+     缓存查找与脚本启动开销，还有 controllerchange 触发整页重载的额外启动风险。
+     PWA 能力只对真正的 https 网页端有意义。 -->
 <script>
-if ('serviceWorker' in navigator) {
+var _swEnable = ('serviceWorker' in navigator) &&
+                !(window.Capacitor) &&
+                location.protocol.indexOf('http') === 0 &&
+                location.hostname !== 'localhost';
+if (_swEnable) {
   /* 本次打开前是否已被 SW 接管：首次安装时为 false，用来避免首次访问白刷新一次 */
   var hadSW = !!navigator.serviceWorker.controller;
   window.addEventListener('load', function () {
