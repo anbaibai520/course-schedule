@@ -482,6 +482,12 @@ button{cursor:pointer;border:0;background:none}
 .srow-tm .to{color:var(--muted);font-weight:700;flex:none;height:96px;display:flex;align-items:center;font-size:15px}
 .srow .loc{margin-top:7px;width:100%;box-sizing:border-box;padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:var(--panel);outline:none;min-width:0;font-size:13px}
 .srow .loc:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent)}
+/* 课型/班号 + 地点：并排一行（课型窄一些，地点占剩下的） */
+.srow-x{display:flex;gap:7px;margin-top:7px}
+.srow .srow-x input{margin-top:0;flex:1 1 0;min-width:0;width:auto;box-sizing:border-box;
+  padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:var(--panel);outline:none;font-size:13px}
+.srow .srow-x input:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent)}
+.srow .srow-x .knd{flex:0 1 42%}
 /* 周次录入行 */
 .srow-wk{display:flex;align-items:center;gap:7px;margin-top:7px;font-size:12.5px;flex-wrap:wrap}
 .srow-wk .wk-lbl{color:var(--muted);font-weight:600;flex:none}
@@ -1051,6 +1057,9 @@ function normalize(o){
       start: clamp(+x.start || 480, 0, 1440),
       end: clamp(+x.end || 565, 0, 1440),
       location: String(x.location || ''),
+      /* 课型/班号：同一门课（同课程代码）合并后，各时间段靠它保留自己那节课的
+         课型与班号（Lecture-D / Lecture-E），合并前后信息不丢 */
+      kind: String(x.kind || '').trim().slice(0, 24),
       weeks: normWeeks(x.weeks, s.totalWeeks)
     })).filter(x => x.end > x.start))
   })).filter(c => c.sessions.length);
@@ -1517,6 +1526,9 @@ function renderBoard(){
        4px 列间距 + 8px 内边距 + 2px 边框 = 14px 非文字宽度 */
     const textW = colW / it.cols - 14;
     const np = nameParts(it.course.name);
+    /* 课型/班号优先用「这个时间段自己的」：同一门课（同课程代码）合并后
+       课名只剩代码，各时间段的课型（Lecture-D / Lecture-E）仍要能看出来 */
+    if (it.s.kind) np.kind = it.s.kind;
     /* 代码行必留、且不能被硬断：先按块高设一个上限，再按代码实测宽度拟合 */
     const hCap = clamp((h - 8) / (1.16 + 0.84 * 1.14), 7, 15);
     const fs = blkFont2(Math.max(8, textW - 1), [np.code], Math.min(15, hCap), 7);
@@ -1542,7 +1554,7 @@ function renderBoard(){
     const timeText = !lay.time ? '' : (fitsW(tFull) ? tFull : (fitsW(fmt(it.start)) ? fmt(it.start) : ''));
     const fg = lum(it.course.color) > 0.62 ? '#16202e' : '#ffffff';
     return `<div class="blk" data-cid="${it.course.id}" data-sid="${it.s.id}"
-        title="点击编辑：${esc(it.course.name)}（${fmt(it.start)}-${fmt(it.end)}）${loc ? ' · ' + esc(loc) : ''}"
+        title="点击编辑：${esc(np.code)}${np.kind ? ' ' + esc(np.kind) : ''}（${fmt(it.start)}-${fmt(it.end)}）${loc ? ' · ' + esc(loc) : ''}"
         style="left:${left}%;width:calc(${w}% - 4px);top:${top + 1}px;height:${h}px;--c:${it.course.color};--fg:${fg};--fs:${fs}px;--kfs:${kfs}px;--tfs:${tfs}px;--kp:${lay.kp};--lp:1">
         ${timeText ? `<div class="bt">${timeText}</div>` : ''}
         <div class="bn">${esc(np.code)}</div>
@@ -1635,11 +1647,15 @@ function renderList(){
     } else {
       html += arr.map(({ course: c, s }) => {
         const sub = [c.teacher, s.location].filter(Boolean).join(' · ');
-        return `<div class="ditem" data-cid="${c.id}" data-sid="${s.id}" title="点击编辑：${esc(c.name)}">
+        /* 课型/班号当「额外信息」时才追加：合并后的课名为代码（CCT001），
+           这里补上这次课是 Lecture-D 还是 Lecture-E；没合并过的课名里本来就带，不重复 */
+        const kd = String(s.kind || '').trim();
+        const label = (kd && nameKey(c.name).indexOf(nameKey(kd)) < 0) ? c.name + ' · ' + kd : c.name;
+        return `<div class="ditem" data-cid="${c.id}" data-sid="${s.id}" title="点击编辑：${esc(label)}">
           <span class="dbar" style="background:${c.color}"></span>
           <div class="dtime"><b>${fmt(s.start)}</b><span>${fmt(s.end)}</span></div>
           <div class="dmain">
-            <div class="dtitle">${esc(c.name)}</div>
+            <div class="dtitle">${esc(label)}</div>
             <div class="dsub">${sub ? esc(sub) : '—'}</div>
           </div>
           <div class="dacts">
@@ -1732,15 +1748,25 @@ function closeModal(){
   /* 更新弹窗被关闭（✕ / 点遮罩）：通知一次，用于停止倒计时，避免"关了还在倒计时自动重启" */
   const hook = window._updOnClose;
   if (hook){ window._updOnClose = null; try { hook(); } catch (e) {} }
+  /* 询问弹窗被 ✕ / 遮罩关掉（没点按钮）：用「兜底答案」把 Promise 收掉，
+     否则调用方会一直挂在 await 上（云同步的登录流程尤其不能悬着） */
+  const ask = window._askOnClose, resolveAsk = window._askResolve;
+  window._askOnClose = undefined; window._askResolve = null;
+  if (ask !== undefined && resolveAsk){ try { resolveAsk(ask); } catch (e) {} }
 }
 document.addEventListener('click', e => { if (e.target.dataset && 'close' in e.target.dataset) closeModal(); });
 
-/* 通用询问弹窗：buttons = [{label, value, cls}] */
-function askModal(title, text, buttons){
+/* 通用询问弹窗：buttons = [{label, value, cls}]；onCloseVal = 被 ✕ / 遮罩关掉时的答案 */
+function askModal(title, text, buttons, onCloseVal){
   return new Promise(res => {
     openModal(title, `<div class="hint" style="font-size:13.5px;color:var(--text)">${text}</div>`,
       buttons.map((b, i) => `<button class="btn ${b.cls || ''}" data-val="${esc(b.value)}" id="ask${i}">${esc(b.label)}</button>`).join(''));
-    $('#mFoot').querySelectorAll('button').forEach(b => b.onclick = () => { closeModal(); res(b.dataset.val); });
+    window._askOnClose = onCloseVal;
+    window._askResolve = res;
+    $('#mFoot').querySelectorAll('button').forEach(b => b.onclick = () => {
+      window._askOnClose = undefined; window._askResolve = null;
+      closeModal(); res(b.dataset.val);
+    });
   });
 }
 
@@ -1759,9 +1785,9 @@ function openEditor(cid, prefill){
   const isNew = !course;
   const base = course ? JSON.parse(JSON.stringify(course)) : {
       id: uid(), name: '', teacher: '', note: '', color: pickColor(),
-      sessions: prefill ? [{ id: uid(), day: prefill.day, start: prefill.start, end: prefill.end, location: '', weeks: null }]
+      sessions: prefill ? [{ id: uid(), day: prefill.day, start: prefill.start, end: prefill.end, kind: '', location: '', weeks: null }]
                         : [{ id: uid(), day: ui.view === 'day' ? ui.day : (todayDow() <= 5 ? todayDow() : 1),
-                             start: 480, end: 570, location: '', weeks: null }]
+                             start: 480, end: 570, kind: '', location: '', weeks: null }]
   };
   base.sessions = sortSessions(base.sessions);   // 打开时先理顺顺序
   editing = { isNew, course: base, colorTouched: false };
@@ -1776,16 +1802,17 @@ function pickColor(){
 }
 /* 按课名给某门课挑颜色：
    1) 同一门课在课表里已有颜色 → 直接沿用（保证同一门课永远同色，不会再变）；
+      这里的「同一门课」按 courseKey 判断 —— 同课程代码的 -D / -E 也视为同一门课；
    2) 课名派生色没被别的课占用 → 用派生色（稳定，删课加课都不影响别的课）；
    3) 派生色已被占用 → 取当前用得最少的那个 —— 保证「不同的课」分到不同颜色。 */
 function bestColor(name, selfId){
-  const n = String(name || '').trim();
+  const n = normName(name).trim();
   if (!n) return pickColor();
   const others = state.courses.filter(c => c.id !== selfId);
-  // 同名课可能不止一节（一门课多个时间段）：沿用它们已有的颜色。
-  // 若这几节本身颜色就不一致（历史脏数据），取多数色作为归依色。
-  const key = nameKey(n);
-  const twins = others.filter(c => nameKey(c.name) === key);
+  // 同一门课可能不止一条记录（同一门课多个时间段）：沿用它们已有的颜色。
+  // 若这几条本身颜色就不一致（历史脏数据），取多数色作为归依色。
+  const key = courseKey(n);
+  const twins = others.filter(c => courseKey(c.name) === key);
   if (twins.length) return majorityColor(twins);
   const want = autoColor(n);
   if (!others.some(c => c.color === want)) return want;
@@ -1826,19 +1853,40 @@ function colorize(courses){
   return n;
 }
 /* ---- 同一门课 = 同一种颜色 ----
-   历史数据里「同名却不同色」最常见的三个来源：复制课程时段、分批多次导入、
+   历史数据里「同一门课却不同色」最常见的三个来源：复制课程时段、分批多次导入、
    早期版本手动改色只改当次那一节。结果同一门课在课表上花花绿绿，
    看起来像好几门不同的课，扫一眼就是乱的。
-   alignSameName() 是精确修补：只把「同名而颜色不一致」的那组拉回同一个颜色，
-   完全不碰其它课 —— 比 colorize() 全量重排温和，不会打乱用户已认可的配色。 */
-/* 课名归一化：忽略空格、全角/半角、大小写差异 —— 判断「是不是同一门课」的统一口径。
-   「CCT001-Lecture-D」与「cct001－lecture－D」「CCT001 Lecture D」都算同一门课。
-   合并课程、同名同色、编辑时沿用颜色，全部走这一个函数，避免各处口径不一致。 */
+   alignSameCourse() 是精确修补：只把「同一门课（同课程代码）颜色不一致」的那组
+   拉回同一个颜色，完全不碰其它课 —— 比 colorize() 全量重排温和，
+   不会打乱用户已认可的配色。 */
+/* 课名归一化之「全角转半角」（含全角空格）：课程代码识别与课名比较共用同一个入口 */
+function normName(raw){
+  return String(raw == null ? '' : raw)
+    .replace(/\u3000/g, ' ')                                                                  // 全角空格
+    .replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));        // 全角 ASCII
+}
+/* 课名归一化：忽略空格、全角/半角、大小写差异
+   「CCT001-Lecture-D」与「cct001－lecture－D」「CCT001 Lecture D」都会归一到同一个 key */
 function nameKey(name){
-  let s = String(name == null ? '' : name);
-  s = s.replace(/\u3000/g, ' ');                                                            // 全角空格
-  s = s.replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));   // 全角 ASCII
-  return s.replace(/\s+/g, '').toUpperCase();
+  return normName(name).replace(/\s+/g, '').toUpperCase();
+}
+/* ---- 课程代码 = 同一门课的身份 ----
+   教务系统的课名是「课程代码 + 课型-班号」两段式：CCT001-Lecture-D、EAP043 Seminar-D119。
+   同一代码下的不同课型 / 不同班号（-D 与 -E、Lecture 与 Tutorial）本质是**同一门课**，
+   只是上课的时间段不同。之前按整个课名判断「同一门课」，于是它们在课表上裂成好几块，
+   看上去像两门互不相干的课 —— 这正是「分辨不出是同一节课」的根源。
+   识别规则：字母开头 + 2~5 位数字 + 可选字母后缀，两侧是分隔符（空格 / 连字符 / 斜杠 / 点）
+   或串首串尾。认不出代码的课名（Taekwondo、高等数学、大学英语）返回空串，
+   此时退回按整个课名判断，不会把毫不相干的课粗暴并到一起。 */
+const RE_CODE = /(?:^|[\s\-_·–—.\/、])([A-Za-z]{1,6}\d{2,5}[A-Za-z]{0,4})(?=$|[\s\-_·–—.\/、])/;
+function courseCode(name){
+  const m = normName(name).match(RE_CODE);
+  return m ? m[1].toUpperCase() : '';
+}
+/* 合并 / 同色共用的分组键：认得出课程代码就按代码，认不出才按整个课名 */
+function courseKey(name){
+  const code = courseCode(name);
+  return code ? 'C:' + code : 'N:' + nameKey(name);
 }
 function majorityColor(group){                       // 组内出现最多的颜色；并列取先出现的
   const cnt = new Map();
@@ -1847,11 +1895,11 @@ function majorityColor(group){                       // 组内出现最多的颜
   cnt.forEach((k, col) => { if (k > bestN){ bestN = k; best = col; } });
   return best;
 }
-function alignSameName(courses){
+function alignSameCourse(courses){
   const list = Array.isArray(courses) ? courses : [];
   const groups = new Map();
   list.forEach(c => {
-    const key = nameKey(c.name);
+    const key = courseKey(c.name);
     if (!key) return;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(c);
@@ -1864,12 +1912,12 @@ function alignSameName(courses){
   });
   return n;
 }
-/* 课表里存在「同名却不同色」吗？（比 isMonochrome 更普遍的一种脏数据） */
-function hasSameNameConflict(courses){
+/* 课表里存在「同一门课却不同色」吗？（比 isMonochrome 更普遍的一种脏数据） */
+function hasCourseColorConflict(courses){
   const list = Array.isArray(courses) ? courses : [];
   const m = new Map();
   for (const c of list){
-    const key = nameKey(c.name);
+    const key = courseKey(c.name);
     if (!key) continue;
     if (m.has(key) && m.get(key) !== c.color) return true;
     m.set(key, c.color);
@@ -1877,12 +1925,12 @@ function hasSameNameConflict(courses){
   return false;
 }
 /* 保存课程后调用：把这门课的所有时间段统一到一个颜色。
-   forceColor 非空（用户刚手动挑过色）→ 以它为准，同名课全部跟随；
+   forceColor 非空（用户刚手动挑过色）→ 以它为准，同一门课全部跟随；
    否则按组内多数色收敛。返回改动的条数。 */
 function syncCourseColor(course, forceColor){
-  const key = nameKey(course && course.name);
+  const key = courseKey(course && course.name);
   if (!key) return 0;
-  const group = state.courses.filter(c => nameKey(c.name) === key);
+  const group = state.courses.filter(c => courseKey(c.name) === key);
   if (group.length < 2) return 0;
   const col = forceColor || majorityColor(group);
   let n = 0;
@@ -1896,10 +1944,14 @@ function syncCourseColor(course, forceColor){
    而 impCommit() 的追加路径是 state.courses.concat(list) —— 与已有课表完全不比对，
    于是同一门课在数据里裂成好几条记录，每条各自带一份时间段，
    周视图上就是同一时间叠着好几个块，列表视图里也反复出现。
-   mergeSameCourses() 把它们并回一条：
-     · 分组口径 = nameKey()（忽略空格 / 全角 / 大小写）
-     · 课名取组内**最完整**的那个（字符最长），不改写用户原本的写法
-     · 颜色取组内多数色，与「同名同色」一致
+   更常见的一种：教务系统的课名带课型/班号（CCT001-Lecture-D、CCT001-Lecture-E），
+   按整个课名合并根本认不出它们是同一门课 —— 它们便一直各占一块，像两门课。
+   mergeSameCourses() 把同一门课并回一条：
+     · 分组口径 = courseKey()：认得出课程代码就按代码（同代码的 -D/-E 是一门课），
+       认不出代码（Taekwondo、高等数学）才按整个课名
+     · 组内多条 → 课名收敛成**课程代码本身**（一门课的身份就是代码），
+       各时间段原本的课型/班号落到 session.kind 上，块上照样显示 Lecture-D / Lecture-E
+     · 颜色取组内多数色，与「同一门课同色」一致；教师/备注取组内第一个非空值
      · 时间段**全部保留**，只去掉 day+start+end+location+周次 完全一样的重复项
        （重复导入的真正病灶；周次不同＝单双周，属于两笔独立数据，不合并）
    注意：合并的是**记录**，不是时间段 —— 正常的多时段课程本来就不受影响。 */
@@ -1908,29 +1960,40 @@ function mergeSameCourses(courses){
   const list = Array.isArray(courses) ? courses : [];
   const groups = new Map();
   list.forEach(c => {
-    const k = nameKey(c.name);
+    const k = courseKey(c.name);
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(c);
   });
   let merged = 0, dupSess = 0;
   const out = [];
   groups.forEach(g => {
-    /* 宿主 = 课名最完整的那条；并列时取先出现的 */
+    /* 宿主 = 课名最完整的那条；并列时取先出现的（保留用户原本的写法与 id） */
     const host = g.reduce((a, b) =>
       (String(b.name || '').length > String(a.name || '').length ? b : a), g[0]);
     const sess = [], seen = new Set();
-    g.forEach(c => (c.sessions || []).forEach(s => {
-      const sk = [s.day, s.start, s.end, String(s.location || '').trim(), wkKey(s.weeks)].join('|');
-      if (seen.has(sk)){ dupSess++; return; }
-      seen.add(sk); sess.push(s);
-    }));
-    host.name = String(host.name || '').trim() || '未命名课程';
+    g.forEach(c => {
+      /* 这条记录的课型/班号（CCT001-Lecture-D →「Lecture-D」）：
+         合并后课名只剩代码，课型必须挂到它自己的时间段上，否则信息就丢了 */
+      const kd = g.length > 1 ? nameParts(c.name).kind : '';
+      (c.sessions || []).forEach(s => {
+        const sk = [s.day, s.start, s.end, String(s.location || '').trim(), wkKey(s.weeks)].join('|');
+        if (seen.has(sk)){ dupSess++; return; }
+        seen.add(sk);
+        if (kd) s.kind = s.kind || kd;
+        sess.push(s);
+      });
+    });
     host.sessions = sortSessions(sess);
     if (g.length > 1){
+      const code = courseCode(host.name);
+      /* 同一课程代码就是同一门课：课名收敛成代码本身，一眼看得出是一条课 */
+      host.name = code || String(host.name || '').trim() || '未命名课程';
       host.color = majorityColor(g);
       host.teacher = g.map(c => String(c.teacher || '').trim()).find(Boolean) || '';
       host.note = g.map(c => String(c.note || '').trim()).find(Boolean) || '';
       merged += g.length - 1;
+    } else {
+      host.name = String(host.name || '').trim() || '未命名课程';
     }
     out.push(host);
   });
@@ -1955,11 +2018,13 @@ async function openMergeSame(){
   const pv = mergePreview();
   if (!pv.before || (pv.before === pv.after && !pv.dupSess)){ toast('没有需要合并的课程'); return; }
   const r = await askModal('合并同一门课',
-    '课名相同的课程会并成一条记录（忽略空格、全角、大小写差异）。<br><br>' +
+    '同一门课（同一个课程代码，例如 CCT001-Lecture-D 与 CCT001-Lecture-E）会并成一条记录；' +
+    '认不出课程代码的课名则按整个课名判断，同样忽略空格、全角、大小写差异。<br><br>' +
     `当前 <b>${pv.before}</b> 条课程记录 → 合并后 <b>${pv.after}</b> 条` +
     (pv.dupSess ? `；另有 <b>${pv.dupSess}</b> 个完全重复的时间段会被去掉` : '') +
     '<br><br>时间段本身不会丢 —— 合并只是把同一门课收回到一条记录里，' +
-    '课表上的显示位置不变。合并后可在设置 → 数据 里一键撤销。',
+    '各时间段的课型/班号（Lecture-D 等）会跟着它自己保留，课表上的显示位置也不变。' +
+    '合并后可在设置 → 数据 里一键撤销。',
     [{ label: '取消', value: 'no' }, { label: '合并', value: 'yes' }]);
   if (r !== 'yes') return;
   impStash('合并同一门课');            /* 留一份后悔药 */
@@ -1989,7 +2054,7 @@ function recolorAll(){
   return n;
 }
 /* 启动 / 导入 / 云同步时的配色自愈。两级，顺序不能反：
-   ① 同名同色 —— 同一门课的多个时间段统一成一个颜色（精确修补，不动别的课）；
+   ① 同一门课同色 —— 同一门课（同课程代码）的多个时间段统一成一个颜色（精确修补，不动别的课）；
    ② 不同课不同色 —— 整份课表清一色时按课名重排（老备份最常见的缺陷）。
    只做「需要才做」的判断，不做无谓的全量重排，避免用户认可的配色被无端打乱。 */
 function autoPaletteFix(){
@@ -1998,7 +2063,7 @@ function autoPaletteFix(){
   (state.people || []).forEach(p => {
     const list = p.courses || [];
     if (!list.length) return;
-    if (hasSameNameConflict(list)) n += alignSameName(list);
+    if (hasCourseColorConflict(list)) n += alignSameCourse(list);
     if (isMonochrome(list)) n += colorize(list);
   });
   return n;
@@ -2083,7 +2148,10 @@ function renderEditor(){
                 </select>
               </span>
             </div>
-            <input class="loc" placeholder="地点（选填）" value="${esc(s.location)}">
+            <div class="srow-x">
+              <input class="knd" placeholder="课型/班号" value="${esc(s.kind || '')}">
+              <input class="loc" placeholder="地点（选填）" value="${esc(s.location)}">
+            </div>
           </div>`).join('')}
       </div>
       <div class="tm-hint">拖动/滚轮把时间滚进中间带即可选中（拖到范围外可快速连续滚动）；点某条时间可跳过去。</div>
@@ -2202,7 +2270,8 @@ function renderEditor(){
     syncFromForm();                                   // 1. 先把用户改动读进数据
     const last = c.sessions[c.sessions.length - 1];
     const ns = { id: uid(), day: last ? last.day : 1, start: last ? last.start : 480,
-                 end: last ? last.end : 570, location: last ? last.location : '', weeks: null };
+                 end: last ? last.end : 570, kind: last ? (last.kind || '') : '',
+                 location: last ? last.location : '', weeks: null };
     c.sessions = sortSessions([...c.sessions, ns]);   // 2. 加进去并立即按日期排序
     renderEditor();                                   // 3. 重绘
     const row = $(`.srow[data-sid="${ns.id}"]`);
@@ -2213,7 +2282,7 @@ function renderEditor(){
     b.closest('.srow').remove();                      // 1. 先从 DOM 移除该行
     syncFromForm();                                   // 2. 再同步
     if (!c.sessions.length)
-      c.sessions.push({ id: uid(), day: todayDow(), start: 480, end: 570, location: '', weeks: null });
+      c.sessions.push({ id: uid(), day: todayDow(), start: 480, end: 570, kind: '', location: '', weeks: null });
     renderEditor();
   };
   // 「每周都上 / 指定周次」切换 → 显隐周次区间输入，无需整页重绘
@@ -2264,6 +2333,7 @@ function syncFromForm(){
       weeks = (f === 1 && t === tot && p === 0) ? null : { f, t, p };
     }
     return { id: row.dataset.sid, day: +row.querySelector('.sday').value, start: s, end: e,
+             kind: (row.querySelector('.knd') ? row.querySelector('.knd').value.trim() : ''),
              location: row.querySelector('.loc').value.trim(), weeks };
   }));
 }
@@ -2314,11 +2384,11 @@ function openSettings(){
       </div>
     </div>
     <div class="setrow">
-      <div class="lb">自动合并同名课<small>课名相同的课程并成一条记录，重复导入不会再多出重复项（时间段完全重复的会去掉）</small></div>
+      <div class="lb">自动合并同一门课<small>同一课程代码的记录并成一条（CCT001-Lecture-D 与 -E 算一门课），重复导入不会再多出重复项</small></div>
       <button class="switch" id="sAutoMerge" aria-pressed="${S.autoMerge !== false}"></button>
     </div>
     <div class="setrow">
-      <div class="lb">合并同一门课<small>现在就把课名相同的记录并成一条，合并前先给你看结果，可撤销</small></div>
+      <div class="lb">合并同一门课<small>现在就把同一门课的记录并成一条，合并前先给你看结果，可撤销</small></div>
       <button class="btn" id="sMerge">立即合并</button>
     </div>
     <div class="setrow">
@@ -2326,7 +2396,7 @@ function openSettings(){
       <button class="switch" id="sAutoColor" aria-pressed="${S.autoPalette !== false}"></button>
     </div>
     <div class="setrow">
-      <div class="lb">重新配色<small>按课名重排一遍：同名课归为一色，不同课各用一种颜色</small></div>
+      <div class="lb">重新配色<small>按课程重排一遍：同一门课归为一色，不同课各用一种颜色</small></div>
       <button class="btn" id="sRecolor">立即配色</button>
     </div>
     <div class="setrow">
@@ -2497,7 +2567,7 @@ function openSettings(){
       const n = mergeTidy();
       autoPaletteFix();
       render();
-      toast(n ? ('已开启自动合并，整理了 ' + n + ' 处重复') : '已开启自动合并同名课');
+      toast(n ? ('已开启自动合并，整理了 ' + n + ' 处重复') : '已开启自动合并同一门课');
     }
   };
   const rc = $('#sRecolor');
@@ -4843,10 +4913,20 @@ function initView(){
 if (!window.__hotSwapPending){
 state = load();
 /* 老数据自愈（首屏前完成，用户无需任何操作）：
-   ① 重复导入留下的「同一门课多条记录」并回一条，顺带去掉完全重复的时间段；
-   ② 导入缺陷曾让同一份课表清一色同一个蓝，理顺成「不同课不同色」（同名课同色）。
-   设置里的「自动合并同名课」/「自动配色」关掉即分别不执行。 */
-if (state.settings.autoMerge !== false && mergeTidy()) save();
+   ① 同一门课（同课程代码）的多条记录并回一条，顺带去掉完全重复的时间段；
+   ② 导入缺陷曾让同一份课表清一色同一个蓝，理顺成「不同课不同色」（同一门课同色）。
+   设置里的「自动合并同一门课」/「自动配色」关掉即分别不执行。
+   合并会改动数据结构，所以先留一份快照 —— 万一并过了头，设置 → 数据 里能一键撤回。 */
+if (state.settings.autoMerge !== false){
+  const needMerge = (state.people || []).some(p => {
+    const r = mergeSameCourses(p.courses || []);
+    return r.merged || r.dupSess;
+  });
+  if (needMerge){
+    impStash('自动合并同一门课');
+    if (mergeTidy()) save();
+  }
+}
 if (autoPaletteFix()) save();
 initView();
 render();
@@ -4888,8 +4968,10 @@ const cloud = { cfg: { url: CLOUD_DEFAULT_URL, key: CLOUD_DEFAULT_KEY }, session
      subsSig   订阅列表 + 昵称/分享码 + 各目标 updated_at 的签名 —— 相同即跳过重建
      lastSync  最近一次同步完成的时间戳
      dirty     本地存在尚未推送成功的改动
+     uid       这台设备上一次同步过的账号 id —— 与当前登录账号不同，说明是「首次在这台
+               设备登录这个账号」，需要让用户决定本地与云端两份课表怎么合（不再直接覆盖）
      inflight  是否已有同步在跑（并发去重，避免重复请求） */
-  meta: { myAt: null, subsSig: '', lastSync: 0, dirty: false, inflight: false } };
+  meta: { myAt: null, subsSig: '', lastSync: 0, dirty: false, uid: null, inflight: false } };
 let _cloudBusy = false, _pushT = 0;
 
 /* 记住账号密码：勾选后保存 {name, pass, auto}，打开云面板时静默登录一次 */
@@ -4910,7 +4992,7 @@ function cloudLoad(){
     cloud.session = o.session || null;
     cloud.profile = o.profile || null;
     cloud.subs = o.subs || [];
-    cloud.meta = Object.assign({ myAt: null, subsSig: '', lastSync: 0, dirty: false, inflight: false }, o.meta || {});
+    cloud.meta = Object.assign({ myAt: null, subsSig: '', lastSync: 0, dirty: false, uid: null, inflight: false }, o.meta || {});
   } catch (e) {}
 }
 function cloudPersist(){
@@ -5000,7 +5082,9 @@ async function cAuto(path, opts){
   }
 }
 function cloudSignOutLocal(){
-  cloud.session = null; cloud.profile = null; cloud.subs = []; cloud.status = 'off'; cloudPersist();
+  cloud.session = null; cloud.profile = null; cloud.subs = []; cloud.status = 'off';
+  cloud.meta.uid = null;   /* 下次登录这个账号时，重新让用户决定本地/云端两份课表怎么合 */
+  cloudPersist();
 }
 
 /* ---------------- 账号 ---------------- */
@@ -5037,7 +5121,23 @@ async function cloudHello(){
   /* 档案（昵称/分享码）与课表数据互不依赖 → 并行请求，省掉一个串行来回 */
   const profP = cAuto('/rest/v1/profiles?id=eq.' + uid + '&select=id,nickname,share_code')
     .then(r => (r && r[0]) || null).catch(() => null);
-  try { _cloudBusy = true; await cloudPull(); cloud.status = 'on'; cloud.error = ''; }
+  /* 这台设备第一次登录这个账号 → 先问清「本地与云端两份课表怎么合」，
+     而不是无条件用云端覆盖本地（那样本地刚编好的课表会凭空消失）。
+     已经同步过的账号照旧静默同步，不再打扰。 */
+  const fresh = cloud.meta.uid !== uid;
+  try {
+    _cloudBusy = true;
+    if (fresh){
+      const row = await cloudFetchRow();
+      const rd = (row && row.data && Array.isArray(row.data.people) && row.data.people.length) ? row.data : null;
+      if (!rd) await cloudPush();                                  /* 云端还是空的 → 把本地传上去 */
+      else if (await cloudResolveLogin(rd, row.updated_at)) cloud.meta.uid = uid;
+      await cloudSyncSubs();
+    } else {
+      await cloudPull();
+    }
+    cloud.status = 'on'; cloud.error = '';
+  }
   catch (e){ cloud.status = 'error'; cloud.error = String(e.message || e); }
   finally { _cloudBusy = false; }
   cloud.profile = await profP;
@@ -5048,6 +5148,103 @@ async function cloudHello(){
   if (derived && !(cloud.profile && cloud.profile.nickname)) cloudSaveNick(derived);
   /* 登录成功后也复查一次定位权限 */
   setTimeout(() => { geoNagCheck(); }, 1500);
+}
+
+/* ---------------------------------------------------------------------
+   登录时的数据取舍（关键：绝不静默覆盖本地）
+   ---------------------------------------------------------------------
+   旧行为：登录 = 拉云端 → applyCloudData() → 本地课表被整份替换掉。
+   本地那份可能在没登录时就编好了（不注册也能用），于是「一登录就全没了」。
+   现在分三种情况：
+     · 云端空 / 本地空        —— 没什么可取舍的，直接单向同步
+     · 两边内容完全一样        —— 静默通过（常见于重装、换设备后同一份课表）
+     · 两边都有且内容不同      —— 弹窗三选一：合并 / 云端覆盖本地 / 本地覆盖云端
+   只有「这台设备首次登录这个账号」才会走这套判断；之后按原逻辑静默同步。 */
+function countCourses(people){
+  return (people || []).reduce((a, p) => a + ((p.courses || []).length), 0);
+}
+/* 云端那份数据里「我自己的课表」（排除订阅来的同学课表） */
+function cloudPeople(data){
+  return ((data && data.people) || []).filter(p => !p.cloud);
+}
+/* 两份课表是否「实质相同」：课表名 + 课程（按课程代码/课名归一）+ 时间段 + 地点 + 周次。
+   相同就不必问用户，也不必动数据。 */
+function scheduleSig(people){
+  return (people || []).map(p => [
+    String(p.name || '').trim(),
+    (p.courses || []).map(c => courseKey(c.name) + '×' + (c.sessions || []).map(s =>
+      [s.day, s.start, s.end, String(s.location || '').trim(), wkKey(s.weeks), String(s.kind || '')].join('~')
+    ).sort().join(';')).sort().join('|')
+  ].join('@')).sort().join('@@');
+}
+async function cloudFetchRow(){
+  const uid = cloudUid(); if (!uid) return null;
+  const rows = await cAuto('/rest/v1/schedules?user_id=eq.' + uid + '&select=user_id,data,updated_at');
+  return (rows && rows[0]) || null;
+}
+/* 把云端课表**并进**本地：同名课表合并到同一份，课程按同一门课取并集，
+   本地原有课程一条都不会被删。返回合并后的课程总数。 */
+function mergeCloudIntoLocal(data){
+  const inc = cloudPeople(data);
+  if (!inc.length) return countCourses(state.people);
+  const local = state.people.filter(p => !p.cloud);
+  inc.forEach(rp => {
+    const name = String(rp.name || '我的课表').trim().slice(0, 20) || '我的课表';
+    const incoming = normalize({ courses: rp.courses || [] }).courses;
+    const mine = local.find(p => String(p.name || '').trim() === name);
+    if (!mine){
+      const np = { id: rp.id || uid(), name, courses: incoming };
+      state.people.push(np); local.push(np);
+      return;
+    }
+    /* 本地在前 → 课名并列时保留本地那条（id 与写法都不变），时间段取并集 */
+    mine.courses = mergeSameCourses((mine.courses || []).concat(incoming)).courses;
+  });
+  if (!state.people.some(p => p.id === state.activeId)) state.activeId = state.people[0].id;
+  return countCourses(state.people);
+}
+/* 返回 true = 已经定案（可以记下「这台设备认过这个账号」）；false = 用户取消了弹窗 */
+async function cloudResolveLogin(data, at){
+  const remoteP = cloudPeople(data);
+  const localP  = state.people.filter(p => !p.cloud);
+  const remoteN = countCourses(remoteP), localN = countCourses(localP);
+  if (!remoteN){ await cloudPush(); return true; }                       /* 云端空 → 本地传上去 */
+  if (!localN || scheduleSig(localP) === scheduleSig(remoteP)){
+    /* 本地空 → 直接用云端；两边一样 → 什么都不用动 */
+    if (!localN) applyCloudData(data);
+    cloud.meta.myAt = at || null;
+    return true;
+  }
+  const r = await askModal('云端已有一份课表',
+    `这台设备上已有 <b>${localN}</b> 门课程，这个账号的云端还有 <b>${remoteN}</b> 门。<br><br>
+     想怎么处理？（在你选择之前，本地与云端都不会被改动）`,
+    [{ label: '合并', value: 'merge', cls: 'primary' },
+     { label: '用云端覆盖本地', value: 'cloud' },
+     { label: '用本地覆盖云端', value: 'local' }],
+    'skip');   /* 点 ✕ / 遮罩关掉 = 先不动 */
+  if (r === 'merge'){
+    impStash('合并云端课表前');                 /* 留一次后悔药：设置 → 数据 里可恢复 */
+    mergeCloudIntoLocal(data);
+    if (state.settings.autoMerge !== false) mergeTidy();
+    autoPaletteFix();
+    save(); render();
+    await cloudPush();                          /* 合并结果写回云端，两台设备从此一致 */
+    toast('已合并本地与云端的课表');
+    return true;
+  }
+  if (r === 'cloud'){
+    impStash('云端覆盖本地');                   /* 本地被覆盖前留一份快照，可撤销 */
+    applyCloudData(data);
+    cloud.meta.myAt = at || null;               /* 已应用的是这一版云端数据，别重复应用 */
+    toast('已用云端课表覆盖本地');
+    return true;
+  }
+  if (r === 'local'){
+    await cloudPush();
+    toast('已用本地课表覆盖云端');
+    return true;
+  }
+  return false;                                 /* 取消：数据两边都不动，下次登录再问 */
 }
 
 /* ---------------------------------------------------------------------
@@ -5224,6 +5421,9 @@ function openCloud(){
   openModal('云同步', '<div id="cloudBox"></div>', '<div class="spacer"></div><button class="btn primary" data-close>关闭</button>');
   renderCloud();
 }
+/* 登录/注册途中可能弹出「云端已有一份课表」三选一 —— 那个弹窗会把云同步面板顶掉。
+   登录流程走完后面板若已不在，就重新打开，用户不会面对一片空白。 */
+function cloudPanelBack(){ if ($('#cloudBox')) renderCloud(); else openCloud(); }
 function cloudStatusText(){
   if (!cloud.cfg.key) return '未配置';
   if (!cloudOn()) return '未登录';
@@ -5327,7 +5527,14 @@ function renderCloud(){
       if (navigator.clipboard) navigator.clipboard.writeText(c).then(() => say('已复制：' + c), () => say('分享码：' + c));
       else say('分享码：' + c);
     };
-    $('#pullNow').onclick = async () => { say('拉取中…'); try { _cloudBusy = true; await cloudHello(); say('已用云端数据覆盖本机'); renderCloud(); } catch (e){ say('拉取失败：' + (e.message || e), true); } finally { _cloudBusy = false; } };
+    /* 手动「拉取」= 用户明确要求用云端这份覆盖本机 → 直接拉，不再弹三选一
+       （顺手把账号记为已认路，之后的登录就按静默同步走） */
+    $('#pullNow').onclick = async () => {
+      say('拉取中…');
+      try { _cloudBusy = true; cloud.meta.uid = cloudUid(); await cloudPull(); cloudPersist(); say('已用云端数据覆盖本机'); renderCloud(); }
+      catch (e){ say('拉取失败：' + (e.message || e), true); }
+      finally { _cloudBusy = false; }
+    };
     $('#pushNow').onclick = async () => { say('上传中…'); try { await cloudPush(); say('已上传本机课表'); } catch (e){ say('上传失败：' + (e.message || e), true); } };
     $('#subAdd').onclick = async () => {
       const v = $('#subCode').value || '';
@@ -5384,7 +5591,7 @@ function renderCloud(){
             if (rm && rm.checked) setRemembered({ name, pass });
             else clearRemembered();
           }
-          renderCloud();
+          cloudPanelBack();
         } catch (e){ say(cloudErrText(e, mode), true); }
       })();
     };
@@ -5412,7 +5619,7 @@ function renderCloud(){
               if (!name) return;
               const email = name.indexOf('@') >= 0 ? name.toLowerCase() : nameToEmail(name);
               await cloudSignIn(email, rm.pass || '');
-              renderCloud();
+              cloudPanelBack();
             } catch (e) { /* 静默：不报错，用户看到已预填的表单可手动重登或改密码 */ }
           }, 80);
         }
@@ -5485,12 +5692,15 @@ window.CourseSchedule = {
   /* 课程块排版（周视图）：字号与行数自适应的纯函数，便于测试与排查 */
   layout: { colWidth: boardColWidth, font: blkFont, fit: blkLayout, autoColor, recolor: recolorCourses,
             parts: nameParts, chunks: wrapChunks, pack: packLines, textPx, fontFor: blkFont2, plan: blkPlan },
-  /* 课程配色：不同课不同色、同名课同色 */
+  /* 课程配色：不同课不同色、同一门课（同课程代码）同色 */
   palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix,
-             sameName: alignSameName, sameNameConflict: hasSameNameConflict, majority: majorityColor,
+             sameCourse: alignSameCourse, courseConflict: hasCourseColorConflict, majority: majorityColor,
+             /* 旧名保留，避免外部脚本失效 */
+             sameName: alignSameCourse, sameNameConflict: hasCourseColorConflict,
              syncCourseColor },
-  /* 同一门课合并：把重复导入留下的多条记录并回一条（口径 = nameKey 课名归一化） */
-  merge: { same: mergeSameCourses, nameKey, tidy: mergeTidy, preview: mergePreview, open: openMergeSame },
+  /* 同一门课合并：把同一门课的记录并回一条（口径 = 课程代码，见 courseKey） */
+  merge: { same: mergeSameCourses, nameKey, code: courseCode, key: courseKey, tidy: mergeTidy,
+           preview: mergePreview, open: openMergeSame },
   /* 数据入口 / 出口 */
   openImport, openIO, parseImport: impDetect, parseUnified: impParseUnified,
   /* AI 识图（截图/拍照 → 统一格式 → 导入）：无配置时调用不会有副作用 */
@@ -5523,6 +5733,8 @@ window.CourseSchedule = {
   /* 云同步（Supabase）：未配置/未登录时以下方法均无副作用 */
   cloud: {
     open: openCloud, pull: cloudPull, push: cloudPush,
+    /* 登录时的数据取舍：云端课表并进本地 / 两份课表是否实质相同 */
+    mergeIntoLocal: mergeCloudIntoLocal, sameSchedule: scheduleSig, count: countCourses,
     subscribe: cloudSubscribe, unsubscribe: cloudUnsubscribe,
     signOut: cloudSignOut, status: cloudStatusText,
     get profile(){ return cloud.profile; },
@@ -5553,7 +5765,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.17.22';
+const APP_VERSION = '2026.09.18.1';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
