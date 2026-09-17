@@ -968,7 +968,8 @@ function defaults(){
     settings: { theme:'auto', accent:'#4f7cff', dayStart:7, dayEnd:22, hourHeight:56,
                 snap:5, showWeekend:true, firstDay:1, view:'week',
                 totalWeeks:20, termStart: defaultTermStart(), weekFilter:true, reminderMin:10,
-                autoPalette:true },
+                autoPalette:true,
+                autoMerge:true },
     people: [p],
     activeId: p.id
   };
@@ -1027,6 +1028,7 @@ function normalize(o){
                 : (parseDay(s.termStart) ? isoDay(parseDay(s.termStart)) : d.settings.termStart);
   s.weekFilter = s.weekFilter !== false;
   s.autoPalette = s.autoPalette !== false;   // 默认开启：不同课自动用不同颜色
+  s.autoMerge   = s.autoMerge !== false;     // 默认开启：同一门课的重复记录自动并成一条
   /* 单份课表的课程清洗 + 排序（供各处复用）。
      末尾丢弃「没有任何时间段」的课程：这种课在界面上既显示不出、也点不开，
      纯粹是看不见的脏数据（旧版导入缺陷就会造出这种课），顺带自愈历史脏数据。 */
@@ -1650,7 +1652,8 @@ function bestColor(name, selfId){
   const others = state.courses.filter(c => c.id !== selfId);
   // 同名课可能不止一节（一门课多个时间段）：沿用它们已有的颜色。
   // 若这几节本身颜色就不一致（历史脏数据），取多数色作为归依色。
-  const twins = others.filter(c => String(c.name || '').trim() === n);
+  const key = nameKey(n);
+  const twins = others.filter(c => nameKey(c.name) === key);
   if (twins.length) return majorityColor(twins);
   const want = autoColor(n);
   if (!others.some(c => c.color === want)) return want;
@@ -1696,6 +1699,15 @@ function colorize(courses){
    看起来像好几门不同的课，扫一眼就是乱的。
    alignSameName() 是精确修补：只把「同名而颜色不一致」的那组拉回同一个颜色，
    完全不碰其它课 —— 比 colorize() 全量重排温和，不会打乱用户已认可的配色。 */
+/* 课名归一化：忽略空格、全角/半角、大小写差异 —— 判断「是不是同一门课」的统一口径。
+   「CCT001-Lecture-D」与「cct001－lecture－D」「CCT001 Lecture D」都算同一门课。
+   合并课程、同名同色、编辑时沿用颜色，全部走这一个函数，避免各处口径不一致。 */
+function nameKey(name){
+  let s = String(name == null ? '' : name);
+  s = s.replace(/\u3000/g, ' ');                                                            // 全角空格
+  s = s.replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));   // 全角 ASCII
+  return s.replace(/\s+/g, '').toUpperCase();
+}
 function majorityColor(group){                       // 组内出现最多的颜色；并列取先出现的
   const cnt = new Map();
   group.forEach(c => cnt.set(c.color, (cnt.get(c.color) || 0) + 1));
@@ -1707,7 +1719,7 @@ function alignSameName(courses){
   const list = Array.isArray(courses) ? courses : [];
   const groups = new Map();
   list.forEach(c => {
-    const key = String(c.name || '').trim();
+    const key = nameKey(c.name);
     if (!key) return;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(c);
@@ -1725,7 +1737,7 @@ function hasSameNameConflict(courses){
   const list = Array.isArray(courses) ? courses : [];
   const m = new Map();
   for (const c of list){
-    const key = String(c.name || '').trim();
+    const key = nameKey(c.name);
     if (!key) continue;
     if (m.has(key) && m.get(key) !== c.color) return true;
     m.set(key, c.color);
@@ -1736,14 +1748,93 @@ function hasSameNameConflict(courses){
    forceColor 非空（用户刚手动挑过色）→ 以它为准，同名课全部跟随；
    否则按组内多数色收敛。返回改动的条数。 */
 function syncCourseColor(course, forceColor){
-  const key = String(course && course.name || '').trim();
+  const key = nameKey(course && course.name);
   if (!key) return 0;
-  const group = state.courses.filter(c => String(c.name || '').trim() === key);
+  const group = state.courses.filter(c => nameKey(c.name) === key);
   if (group.length < 2) return 0;
   const col = forceColor || majorityColor(group);
   let n = 0;
   group.forEach(c => { if (c.color !== col){ c.color = col; n++; } });
   return n;
+}
+
+/* ---- 同一门课 = 一条记录 ----
+   本应用的数据模型是「一门课含多个时间段」（course.sessions）。
+   但重复导入 / 分批追加会破坏这一点：impMerge() 只合并**单次导入内部**的行，
+   而 impCommit() 的追加路径是 state.courses.concat(list) —— 与已有课表完全不比对，
+   于是同一门课在数据里裂成好几条记录，每条各自带一份时间段，
+   周视图上就是同一时间叠着好几个块，列表视图里也反复出现。
+   mergeSameCourses() 把它们并回一条：
+     · 分组口径 = nameKey()（忽略空格 / 全角 / 大小写）
+     · 课名取组内**最完整**的那个（字符最长），不改写用户原本的写法
+     · 颜色取组内多数色，与「同名同色」一致
+     · 时间段**全部保留**，只去掉 day+start+end+location+周次 完全一样的重复项
+       （重复导入的真正病灶；周次不同＝单双周，属于两笔独立数据，不合并）
+   注意：合并的是**记录**，不是时间段 —— 正常的多时段课程本来就不受影响。 */
+const wkKey = w => (w && typeof w === 'object') ? (w.f + '-' + w.t + '-' + (w.p || 0)) : 'all';
+function mergeSameCourses(courses){
+  const list = Array.isArray(courses) ? courses : [];
+  const groups = new Map();
+  list.forEach(c => {
+    const k = nameKey(c.name);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  });
+  let merged = 0, dupSess = 0;
+  const out = [];
+  groups.forEach(g => {
+    /* 宿主 = 课名最完整的那条；并列时取先出现的 */
+    const host = g.reduce((a, b) =>
+      (String(b.name || '').length > String(a.name || '').length ? b : a), g[0]);
+    const sess = [], seen = new Set();
+    g.forEach(c => (c.sessions || []).forEach(s => {
+      const sk = [s.day, s.start, s.end, String(s.location || '').trim(), wkKey(s.weeks)].join('|');
+      if (seen.has(sk)){ dupSess++; return; }
+      seen.add(sk); sess.push(s);
+    }));
+    host.name = String(host.name || '').trim() || '未命名课程';
+    host.sessions = sortSessions(sess);
+    if (g.length > 1){
+      host.color = majorityColor(g);
+      host.teacher = g.map(c => String(c.teacher || '').trim()).find(Boolean) || '';
+      host.note = g.map(c => String(c.note || '').trim()).find(Boolean) || '';
+      merged += g.length - 1;
+    }
+    out.push(host);
+  });
+  return { courses: out, merged, dupSess };
+}
+/* 合并自愈：对每份课表跑一遍。返回「净减少的课程条数 + 去掉的重复时间段数」 */
+function mergeTidy(){
+  let n = 0;
+  (state.people || []).forEach(p => {
+    const r = mergeSameCourses(p.courses);
+    if (r.merged || r.dupSess){ p.courses = r.courses; n += r.merged + r.dupSess; }
+  });
+  return n;
+}
+/* 按当前课表统计「合并后能省下多少」，用于设置页按钮的确认提示（不改数据） */
+function mergePreview(){
+  const r = mergeSameCourses(state.courses);
+  return { before: (state.courses || []).length, after: r.courses.length, dupSess: r.dupSess };
+}
+/* 设置里的「立即合并」：先给影响面，确认后才动数据，并留一份可撤销快照 */
+async function openMergeSame(){
+  const pv = mergePreview();
+  if (!pv.before || (pv.before === pv.after && !pv.dupSess)){ toast('没有需要合并的课程'); return; }
+  const r = await askModal('合并同一门课',
+    '课名相同的课程会并成一条记录（忽略空格、全角、大小写差异）。<br><br>' +
+    `当前 <b>${pv.before}</b> 条课程记录 → 合并后 <b>${pv.after}</b> 条` +
+    (pv.dupSess ? `；另有 <b>${pv.dupSess}</b> 个完全重复的时间段会被去掉` : '') +
+    '<br><br>时间段本身不会丢 —— 合并只是把同一门课收回到一条记录里，' +
+    '课表上的显示位置不变。合并后可在设置 → 数据 里一键撤销。',
+    [{ label: '取消', value: 'no' }, { label: '合并', value: 'yes' }]);
+  if (r !== 'yes') return;
+  impStash('合并同一门课');            /* 留一份后悔药 */
+  const n = mergeTidy();
+  autoPaletteFix();
+  save(); render();
+  toast(n ? ('已把同一门课并成一条，共整理 ' + n + ' 处') : '没有需要合并的课程');
 }
 /* 这份课表是不是「清一色」？≥2 门不同课却只用了 1 种颜色 → 需要自动理顺 */
 function isMonochrome(courses){
@@ -2058,6 +2149,9 @@ function saveEditor(){
      没挑过 → 按组内多数色收敛（顺带自愈历史脏数据）。 */
   if (state.settings.autoPalette !== false)
     syncCourseColor(c, editing.colorTouched ? c.color : '');
+  /* 改名后若与课表里已有的课同名，直接并成一条。
+     顺序上先统一颜色再合并 —— 这样手挑的颜色才会成为组内多数色。 */
+  if (state.settings.autoMerge !== false) mergeTidy();
   save(); render(); closeModal();
   toast(isNew ? '已添加课程' : '已保存修改');
 }
@@ -2086,6 +2180,14 @@ function openSettings(){
       <div style="display:flex;gap:7px;align-items:center">
         <input type="color" id="sAccent" value="${S.accent}" style="width:40px;height:32px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--panel2)">
       </div>
+    </div>
+    <div class="setrow">
+      <div class="lb">自动合并同名课<small>课名相同的课程并成一条记录，重复导入不会再多出重复项（时间段完全重复的会去掉）</small></div>
+      <button class="switch" id="sAutoMerge" aria-pressed="${S.autoMerge !== false}"></button>
+    </div>
+    <div class="setrow">
+      <div class="lb">合并同一门课<small>现在就把课名相同的记录并成一条，合并前先给你看结果，可撤销</small></div>
+      <button class="btn" id="sMerge">立即合并</button>
     </div>
     <div class="setrow">
       <div class="lb">自动配色<small>同一门课永远同一个颜色，不同的课用不同颜色 —— 一眼分清哪节是哪门课</small></div>
@@ -2250,6 +2352,22 @@ function openSettings(){
     el.textContent = w > tot ? `第 ${w} 周（已超学期 ${tot} 周）` : `第 ${w} / ${tot} 周`;
   };
   const cb = $('#sCloud'); if (cb) cb.onclick = openCloud;
+  /* 「立即合并」与「恢复导入前」同样处理：先关掉设置弹窗再开确认框（共用同一个 modal 容器） */
+  const mg = $('#sMerge');
+  if (mg) mg.onclick = () => { closeModal(); setTimeout(() => openMergeSame(), 60); };
+  $('#sAutoMerge').onclick = () => {
+    const b = $('#sAutoMerge');
+    b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
+    const on = b.getAttribute('aria-pressed') === 'true';
+    state.settings.autoMerge = on;
+    save();
+    if (on){
+      const n = mergeTidy();
+      autoPaletteFix();
+      render();
+      toast(n ? ('已开启自动合并，整理了 ' + n + ' 处重复') : '已开启自动合并同名课');
+    }
+  };
   const rc = $('#sRecolor');
   if (rc) rc.onclick = () => {
     const n = recolorAll();
@@ -2853,6 +2971,8 @@ function impCommit(courses, mode, newName){
   if (mode === 'replace'){ impStash('覆盖当前课表'); state.courses = list; }
   else if (mode === 'new'){ const p = addPerson(newName || '导入课表'); p.courses = list; }
   else state.courses = state.courses.concat(list);
+  /* 追加导入最常见的副作用：新导入的课与课表里已有的课重复。先按课名并回一条。 */
+  if (state.settings.autoMerge !== false) mergeTidy();
   autoPaletteFix();   /* 追加后若整份仍是清一色（老数据），顺手理顺 */
   save(); render();
   return list.length;
@@ -2877,6 +2997,7 @@ function impCommitPeople(people, mode){
     const seen = new Set(state.people.map(p => p.id));
     inc.forEach(p => { if (seen.has(p.id)) p.id = uid(); state.people.push({ id: p.id, name: p.name, courses: p.courses }); });
   }
+  if (state.settings.autoMerge !== false) mergeTidy();   /* 老备份里同一门课的重复记录先并回一条 */
   autoPaletteFix();   /* 老备份常是清一色，导入后顺手理顺 */
   save(); render();
   return { p: inc.length, c: nC };
@@ -4579,8 +4700,11 @@ function initView(){
    --------------------------------------------------------------------- */
 if (!window.__hotSwapPending){
 state = load();
-/* 老数据自愈：导入缺陷曾让同一份课表清一色同一个蓝，这里在首屏前就理顺成
-   「不同课不同色」（同名课同色）。设置里的「自动配色」关掉即不执行。 */
+/* 老数据自愈（首屏前完成，用户无需任何操作）：
+   ① 重复导入留下的「同一门课多条记录」并回一条，顺带去掉完全重复的时间段；
+   ② 导入缺陷曾让同一份课表清一色同一个蓝，理顺成「不同课不同色」（同名课同色）。
+   设置里的「自动合并同名课」/「自动配色」关掉即分别不执行。 */
+if (state.settings.autoMerge !== false && mergeTidy()) save();
 if (autoPaletteFix()) save();
 initView();
 render();
@@ -4809,6 +4933,7 @@ function applyCloudData(data){
   state.settings = n.settings;
   state.people   = n.people;
   state.activeId = n.activeId;
+  if (state.settings.autoMerge !== false) mergeTidy();   /* 云端老数据：同一门课的重复记录先并回一条 */
   autoPaletteFix();   /* 云端若是老数据（清一色同色），落地即理顺成不同课不同色 */
   save(); render();
 }
@@ -5190,8 +5315,19 @@ window.CourseSchedule = {
   get state(){ return state; },
   /* 注意：courses 在 state 上是不可枚举访问器，这里显式展开，保证导出结构完整 */
   getState: () => JSON.parse(JSON.stringify({ ...state, courses: state.courses })),
-  setCourses(list){ state.courses = normalize({ courses: list }).courses; autoPaletteFix(); save(); render(); },
-  addCourse(c){ const n = normalize({ courses: [c] }).courses; state.courses.push(...n); autoPaletteFix(); save(); render(); return n[0]; },
+  setCourses(list){ state.courses = normalize({ courses: list }).courses;
+    if (state.settings.autoMerge !== false) mergeTidy();
+    autoPaletteFix(); save(); render(); },
+  addCourse(c){
+    const n = normalize({ courses: [c] }).courses;
+    state.courses.push(...n);
+    if (state.settings.autoMerge !== false) mergeTidy();
+    /* 合并后原记录可能被并进已有同名课，返回课表里真正代表这门课的那条 */
+    const k = nameKey(n[0] && n[0].name);
+    const got = state.courses.find(x => nameKey(x.name) === k) || n[0];
+    autoPaletteFix(); save(); render();
+    return got;
+  },
   removeCourse(id){ state.courses = state.courses.filter(c => c.id !== id); autoPaletteFix(); save(); render(); },
   updateSettings(patch){ Object.assign(state.settings, patch); save(); render(); },
   /* 多人课表 */
@@ -5210,6 +5346,8 @@ window.CourseSchedule = {
   palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix,
              sameName: alignSameName, sameNameConflict: hasSameNameConflict, majority: majorityColor,
              syncCourseColor },
+  /* 同一门课合并：把重复导入留下的多条记录并回一条（口径 = nameKey 课名归一化） */
+  merge: { same: mergeSameCourses, nameKey, tidy: mergeTidy, preview: mergePreview, open: openMergeSame },
   /* 数据入口 / 出口 */
   openImport, openIO, parseImport: impDetect, parseUnified: impParseUnified,
   /* AI 识图（截图/拍照 → 统一格式 → 导入）：无配置时调用不会有副作用 */
@@ -5272,7 +5410,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.17.20';
+const APP_VERSION = '2026.09.17.21';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
