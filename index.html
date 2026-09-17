@@ -398,9 +398,11 @@ button{cursor:pointer;border:0;background:none}
    旧版固定 13px 字号 + word-break:break-all，把单词拦腰截断成
    "C-Lectur / ure" 这种碎片；时间 "11:00 - 12:50" 还会折成两行，
    结果是几乎每个块的内容都溢出，关键信息被裁掉。
-   现在：字号随列宽自适应（--fs 由 renderBoard 按列宽算好注入）、
-        时间永远单行、课名只在空格/连字符处断行、行数（--lp）按块高夹紧，
-        高度不足时优先牺牲「地点」「时间」，课名永远保留。 */
+   现在：课名按教务系统的写法拆成「课程代码」+「课型/班号」两行 ——
+        代码行（--fs）单行不折行，是块里最不能被截断的信息，宁可缩小字号
+        也不硬断；课型行（--kfs）次级，可折到 --kp 行，断行只发生在空格/连字符处。
+        时间（--tfs）永远单行。行数按块高夹紧，高度不足时依次牺牲「地点」「时间」，
+        代码行永远保留。三个字号都由 renderBoard 实测字宽后注入。 */
 .blk{
   --fs:12.5px;
   position:absolute;overflow:hidden;border-radius:8px;padding:4px 4px;
@@ -414,14 +416,19 @@ button{cursor:pointer;border:0;background:none}
 .blk:hover{filter:brightness(1.06);box-shadow:0 4px 14px rgba(0,0,0,.22);z-index:5}
 .blk:active{filter:brightness(.94)}
 /* 时间：单行不折行，比课名小一档；放不下时由 renderBoard 整行不渲染 */
-.blk .bt{font-size:calc(var(--fs) - 1.5px);opacity:.86;font-variant-numeric:tabular-nums;
+.blk .bt{font-size:var(--tfs,11px);opacity:.86;font-variant-numeric:tabular-nums;
   line-height:1.12;white-space:nowrap;overflow:hidden;letter-spacing:-.1px;flex:none}
-/* 课名：占满剩余高度；断行只发生在空格/连字符处；超出 --lp 行即省略 */
-.blk .bn{font-size:var(--fs);font-weight:700;line-height:1.22;min-height:0;
-  overflow-wrap:break-word;word-break:normal;
-  display:-webkit-box;-webkit-line-clamp:var(--lp,3);-webkit-box-orient:vertical;overflow:hidden}
+/* 课程代码：识别一门课的关键信息，单行不折行 —— 字号由代码长度实测拟合，
+   实在放不下才省略号截断，绝不从单词中间劈开 */
+.blk .bn{font-size:var(--fs);font-weight:700;line-height:1.16;flex:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 课型 / 班号：次级信息。断行由 JS 自己决定（每行一个 span），不交给浏览器 ——
+   Chrome 在连字符处既可能断在 "-" 之后、也可能断在之前，会冒出 "-D119"
+   这种以连字符开头的行；自己装箱就只会得到 "Seminar-" + "D119"。 */
+.blk .bk{font-size:var(--kfs,10px);font-weight:600;line-height:1.14;min-height:0;opacity:.94;flex:none}
+.blk .bk > span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* 老师 · 地点：贴底单行省略 */
-.blk .bm{font-size:calc(var(--fs) - 1.5px);opacity:.82;line-height:1.12;flex:none;
+.blk .bm{font-size:var(--tfs,11px);opacity:.82;line-height:1.12;flex:none;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nowline{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--now);z-index:15;pointer-events:none}
 .nowline::before{
@@ -1371,25 +1378,107 @@ function boardColWidth(n){
   const rootW = root.clientWidth || window.innerWidth || 360;
   return Math.max(24, (rootW - pad - bd - g) / Math.max(1, n));
 }
-/* 文字可用宽度 → 字号：5.6 是「一行约放得下 5~6 个西文字符宽度」的经验值。
-   刻意取偏小的字号：宁可两行把课名完整排下，也不要大字号把
-   "EAP043 Seminar-D" 挤成 "…Seminar-" + 孤零零一个 "D"。 */
+/* ---------- 课名拆段：对齐教务系统的「课程代码 + 课型-班号」写法 ----------
+   官方课表里一门课写成 "EAP043 Seminar-D119"、"MTH028 Lecture-D114"。
+   显示时把「代码」与「课型/班号」分成两行：代码行字号独立拟合、永不折行；
+   课型行次级、允许在空格/连字符处折行。这样 7 列只有 30 多像素宽时，
+   看到的是 "MTHO28" / "Lecture"，而不是 "MTHO2" + "8-" + "Lecture"。 */
+function nameParts(raw){
+  const s = String(raw == null ? '' : raw).replace(/[\u00a0\u3000]/g, ' ').trim();
+  if (!s) return { code: '', kind: '' };
+  let m = s.match(/^(\S{1,14}) +(.+)$/);              // 空格优先（官方的三段式写法）
+  if (m) return { code: m[1], kind: m[2] };
+  m = s.match(/^([^\-–—]{1,14})[\-–—](.+)$/);          // 没有空格就按第一个连字符切
+  if (m && /\d/.test(m[1])) return { code: m[1], kind: m[2] };
+  return { code: s, kind: '' };
+}
+/* 按「浏览器实际能断行的位置」切段：空格后、连字符后。
+   拿这些段去拟合字号，折行就只会落在段与段的边界上，不会切开单词。 */
+function wrapChunks(str){
+  const out = []; let cur = '';
+  for (const ch of String(str == null ? '' : str)){
+    cur += ch;
+    if (/[\s\u00a0\-–—\/]/.test(ch)){ if (cur.trim()) out.push(cur); cur = ''; }
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+/* 文字实测宽度：canvas 量字比「字符数 × 经验系数」准得多 ——
+   "Illl" 与 "WWWW" 一样长但宽度差近一倍，靠系数估在窄格里必然算错档位。 */
+let _mctx = null;
+function textPx(str, fs){
+  const s = String(str == null ? '' : str);
+  if (!s) return 0;
+  if (!_mctx){
+    _mctx = document.createElement('canvas').getContext('2d');
+    _mctx.__fam = getComputedStyle(document.body).fontFamily || 'sans-serif';
+    try { _mctx.font = '700 12px ' + _mctx.__fam; } catch (e){}
+    if (!_mctx.font || _mctx.measureText('MM').width < 1) _mctx.__fam = 'sans-serif';
+  }
+  _mctx.font = '700 ' + fs + 'px ' + _mctx.__fam;
+  return _mctx.measureText(s).width;
+}
+/* 课型自己装箱分行：把 wrapChunks 拆出来的段按可用宽度贪心装进若干行，
+   每行都保证放得下。超过 maxLines 就在最后一行的末尾收个省略号。 */
+function packLines(chunks, textW, fs, maxLines){
+  const out = []; let cur = '';
+  (chunks || []).forEach(raw => {
+    const c = String(raw == null ? '' : raw);
+    const next = cur + c;
+    if (cur && textPx(next.replace(/\s+$/, ''), fs) > textW){ out.push(cur.replace(/\s+$/, '')); cur = c; }
+    else cur = next;
+  });
+  if (cur.trim()) out.push(cur.replace(/\s+$/, ''));
+  if (!out.length) return out;
+  const lim = Math.max(1, maxLines || 1);
+  if (out.length <= lim) return out;
+  const cut = out.slice(0, lim);
+  cut[lim - 1] = cut[lim - 1].replace(/\s+$/, '') + '…';
+  return cut;
+}
+/* 段感知字号：给一组「必须整体放进一行」的段，二分出放得下的最大字号。
+   这是修掉「窄格里单词被拦腰截断」的关键 —— 旧做法字号一旦触底就定死，
+   浏览器放不下只能硬断词；现在宁可缩小字号，也要保住整段完整。 */
+function blkFont2(textW, segs, maxFs, minFs){
+  const hi = maxFs || 16, lo = minFs || 7;
+  const ks = (segs || []).filter(Boolean);
+  if (!ks.length || !(textW > 0)) return hi;
+  const fits = fs => !ks.some(s => textPx(s, fs) > textW);
+  if (fits(hi)) return hi;
+  let a = lo, b = hi;
+  for (let i = 0; i < 9; i++){ const m = (a + b) / 2; if (fits(m)) a = m; else b = m; }
+  return clamp(Math.round(a * 2) / 2, lo, hi);
+}
+/* 单段估算接口：对外暴露且被回归测试锁着，保留原行为 */
 function blkFont(textW){
   return clamp(Math.round(textW / 5.6 * 2) / 2, 9.5, 16);
 }
-/* 块高 → 该显示哪些行：容量不足时依次牺牲「地点」「时间」，课名永远保留。
-   常量与 .blk 的 padding(上下共 8px)、gap(2px)、line-height 对齐。 */
-function blkLayout(h, fs, hasLoc){
+/* 块高 → 该显示哪些行。按「每个子元素真实行高 + 2px 间距」精算，不再用经验系数
+   （之前把 --kfs 当成 fs*0.84 算，两个字号一有偏差就少算 1~2px，块内容就溢出了）。
+   优先级：课程代码（必留）> 课型行数 > 时间 > 地点 —— 课型是课名的一部分，
+   宁可少一行时间，也不要把它截断。 */
+function blkPlan(h, fs, hasLoc, kindLines, kfs){
   const PAD = 8, GAP = 2;
-  const t  = fs * 0.86 + GAP;     // 时间行（含间距）
-  const m  = fs * 0.86 + GAP;     // 地点行（含间距）
-  const nl = fs * 1.22;           // 课名每行
+  const kFn = kfs || fs * 0.84;
+  const t = fs * 0.78 * 1.12;      // 时间行（--tfs = fs*0.78，line-height 1.12）
+  const c = fs * 1.16;             // 课程代码行（line-height 1.16）
+  const k = kFn * 1.14;            // 课型单行（line-height 1.14）
+  const m = t;                     // 老师 · 地点行（与时间行同字号）
   const budget = Math.max(0, h - PAD);
-  const time = budget >= t + nl;                     // 至少装得下「时间 + 1 行课名」
-  let loc = false;
-  let lp = Math.floor((budget - (time ? t : 0)) / nl);
-  if (hasLoc && budget >= t + m + nl * 2){ loc = true; lp = Math.floor((budget - t - m) / nl); }
-  return { time, loc, lp: clamp(lp || 1, 1, 6) };
+  const span = hs => hs.reduce((a, x) => a + x, 0) + GAP * Math.max(0, hs.length - 1);
+  const want = clamp(Math.round(kindLines || 0), 0, 6);
+  for (let kp = want; kp >= 0; kp--){
+    const hs = [c]; if (kp) hs.push(k * kp);
+    if (hasLoc && span(hs.concat(t, m)) <= budget) return { time: true,  loc: true,  kp, lp: 1 };
+    if (span(hs.concat(t)) <= budget)              return { time: true,  loc: false, kp, lp: 1 };
+    if (span(hs) <= budget)                        return { time: false, loc: false, kp, lp: 1 };
+  }
+  return { time: false, loc: false, kp: 0, lp: 1 };
+}
+/* 兼容旧签名（回归测试按 {time,loc,lp} 精确比对，不能多带键） */
+function blkLayout(h, fs, hasLoc){
+  const p = blkPlan(h, fs, hasLoc, 0);
+  return { time: p.time, loc: p.loc, lp: p.lp };
 }
 
 function renderBoard(){
@@ -1427,22 +1516,37 @@ function renderBoard(){
     /* 字号：按「这块自己真正能排字的宽度」算（并排挤窄时自动降档）；
        4px 列间距 + 8px 内边距 + 2px 边框 = 14px 非文字宽度 */
     const textW = colW / it.cols - 14;
-    let fs = blkFont(textW);
-    if (h < 26) fs = Math.max(9, Math.round(fs * 0.86 * 2) / 2);
+    const np = nameParts(it.course.name);
+    /* 代码行必留、且不能被硬断：先按块高设一个上限，再按代码实测宽度拟合 */
+    const hCap = clamp((h - 8) / (1.16 + 0.84 * 1.14), 7, 15);
+    const fs = blkFont2(Math.max(8, textW - 1), [np.code], Math.min(15, hCap), 7);
+    /* 课型行次一级：能压成一行就压成一行（跟教务系统一样把 "-D119" 带在同一行），
+       这样省下的那一行正好能留给时间/地点；压不成一行才按段折行。
+       注意「一行够用」必须用实测宽度验证 —— 只看字号会被 7px 下限骗到。 */
+    const kChunks = wrapChunks(np.kind);
+    const kMax = Math.max(7, Math.round(fs * 0.9 * 2) / 2);
+    const kOne = np.kind ? blkFont2(textW, [np.kind], kMax, 7) : kMax;
+    const kOneOk = !!np.kind && np.kind.length <= 16 &&
+      kOne >= Math.max(7.5, fs * 0.6) && textPx(np.kind, kOne) <= textW;
+    const kfs = kOneOk ? kOne : (np.kind ? blkFont2(textW, kChunks, kMax, 7) : kMax);
+    const kAll = np.kind ? packLines(kChunks, textW, kfs, kOneOk ? 1 : 3) : [];   // 先看清它一共要几行
     const loc = [it.course.teacher, it.s.location].filter(Boolean).join(' · ');
-    const lay = blkLayout(h, fs, !!loc);
+    const lay = blkPlan(h, fs, !!loc, kAll.length, kfs);
+    /* 行数被块高夹掉时，在最后一行收省略号 */
+    const kLines = lay.kp > 0 ? packLines(kChunks, textW, kfs, lay.kp) : [];
     /* 时间行：整段放不下就退成只显示开始时间，再放不下就整行不显示。
        窄列（比如手机铺 7 天）里宁可少一行，也不要让 "11:00–12:50" 被截掉半截。 */
-    const smallFs = Math.max(7, fs - 1.5);
-    const fitsW = s => s.length * smallFs * 0.6 <= textW;
+    const tfs = clamp(Math.round(fs * 0.78 * 2) / 2, 7.5, 16);
+    const fitsW = s => textPx(s, tfs) <= textW;
     const tFull = fmt(it.start) + '–' + fmt(it.end);
     const timeText = !lay.time ? '' : (fitsW(tFull) ? tFull : (fitsW(fmt(it.start)) ? fmt(it.start) : ''));
     const fg = lum(it.course.color) > 0.62 ? '#16202e' : '#ffffff';
     return `<div class="blk" data-cid="${it.course.id}" data-sid="${it.s.id}"
         title="点击编辑：${esc(it.course.name)}（${fmt(it.start)}-${fmt(it.end)}）${loc ? ' · ' + esc(loc) : ''}"
-        style="left:${left}%;width:calc(${w}% - 4px);top:${top + 1}px;height:${h}px;--c:${it.course.color};--fg:${fg};--fs:${fs}px;--lp:${lay.lp}">
+        style="left:${left}%;width:calc(${w}% - 4px);top:${top + 1}px;height:${h}px;--c:${it.course.color};--fg:${fg};--fs:${fs}px;--kfs:${kfs}px;--tfs:${tfs}px;--kp:${lay.kp};--lp:1">
         ${timeText ? `<div class="bt">${timeText}</div>` : ''}
-        <div class="bn">${esc(it.course.name)}</div>
+        <div class="bn">${esc(np.code)}</div>
+        ${kLines.length ? `<div class="bk">${kLines.map(l => `<span>${esc(l)}</span>`).join('')}</div>` : ''}
         ${lay.loc ? `<div class="bm">${esc(loc)}</div>` : ''}
       </div>`;
   }).join('');
@@ -1473,6 +1577,34 @@ function renderBoard(){
      </div>`;
 
   board.dataset.colw = colW.toFixed(1);   // 列宽留痕，便于测试与排查
+  fitCodeLines(board);                    // 兜底收敛：代码行绝不允许被省略号吃掉
+}
+
+/* canvas 量字与实际排版之间总有零点几像素的出入，算出来的字号偶尔会「差一点」。
+   与其调系数去凑，不如排完版实测：谁溢出就给谁降半档，直到放得下为止。
+   注意别用 scrollWidth/clientWidth —— 这两个都是取整的，差 0.4px 时会判成「没溢出」，
+   而浏览器照样画出省略号。这里用 Range 量文字实际宽度，精确到子像素。
+   课程代码是块里最不能丢的信息（"MTHO28" 不能变成 "MTHO…"），这里给死保证；
+   课型行同样收敛，免得 "Seminar-" 被截成 "Semina…"。 */
+function fitCodeLines(root){
+  const rng = document.createRange();
+  const wide = el => {
+    rng.selectNodeContents(el);
+    return rng.getBoundingClientRect().width > el.getBoundingClientRect().width - 0.1;
+  };
+  const shrink = (el, floor, bad) => {
+    /* 每一轮都要重新判定：放得下就立刻收手，绝不能一路压到下限 */
+    for (let k = 0; k < 12 && bad(); k++){
+      const cur = parseFloat(getComputedStyle(el).fontSize) || 12;
+      if (cur <= floor) break;
+      el.style.fontSize = Math.max(floor, Math.round((cur - 0.5) * 2) / 2) + 'px';
+    }
+  };
+  root.querySelectorAll('.blk .bn').forEach(el => shrink(el, 7, () => wide(el)));
+  root.querySelectorAll('.blk .bk').forEach(el => {
+    const spans = Array.from(el.children);
+    shrink(el, 7, () => spans.some(wide));
+  });
 }
 
 /* =====================================================================
@@ -3101,6 +3233,11 @@ const AI_PROMPT = [
   '你是课表结构化助手。请识别这张课程表图片，把里面的课程整理成 JSON。',
   '只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码块。格式如下：',
   '{"courses":[{"name":"课程名","teacher":"任课教师","location":"上课地点","day":1,"start":"08:00","end":"09:40","weeks":"1-16"}]}',
+  '课名怎么写（很重要）：统一成「课程代码 + 空格 + 课型-班号」，照抄教务系统的写法，',
+  '例如 "EAP043 Seminar-D119"、"MTH028 Lecture-D114"、"IOT001TC Lecture-D092"、"Taekwondo 跆拳道"。',
+  '课程代码（EAP043 / MTH028 / IOT001TC 这类字母数字组合）一个字母都不能改、不能漏；',
+  '课型写 Seminar / Lecture / Tutorial / 实验 等；班号写 D119 / D091 这种。',
+  '教师、教室、周次都各有字段，一律不要塞进课名；课名里也不要带学分、括号备注、上课日期。',
   '规则：',
   '1) day 用数字 1-7，分别代表周一至周日；',
   '2) start/end 用 24 小时制 "HH:MM"；若表里是"第N节"，按此对照换算：',
@@ -3110,7 +3247,7 @@ const AI_PROMPT = [
   '4) 课表里常见合并单元格：同一门课占连续多节，请按它实际占用的行范围给出 start/end；',
   '5) 同一门课出现在多天或多时段时，输出多条同名记录，day/时间不同；',
   '6) 若一个格子里写了两门课，拆成两条记录；',
-  '7) 看不清或认不出的字段用空字符串，绝不编造；课名看不清就照原样抄写，不要猜测。'
+  '7) 看不清或认不出的字段用空字符串，绝不编造；课名看不清就照原样抄写、不要猜测，但仍按上面的「代码 课型-班号」分段。'
 ].join('\n');
 
 /* ---------------------------------------------------------------------
@@ -3125,6 +3262,11 @@ const AI_LIST_PROMPT = [
   '你是课表结构化助手。我会给你一份课程表 —— 可能是截图、照片，也可能是从教务系统复制出来的乱文本。',
   '请把它整理成 JSON，只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码块。格式如下：',
   '{"courses":[{"name":"课程名","teacher":"任课教师","location":"上课地点","day":1,"start":"08:00","end":"09:40","weeks":"1-16"}]}',
+  '课名怎么写（很重要）：统一成「课程代码 + 空格 + 课型-班号」，照抄教务系统的写法，',
+  '例如 "EAP043 Seminar-D119"、"MTH028 Lecture-D114"、"IOT001TC Lecture-D092"、"Taekwondo 跆拳道"。',
+  '课程代码（EAP043 / MTH028 / IOT001TC 这类字母数字组合）一个字母都不能改、不能漏；',
+  '课型写 Seminar / Lecture / Tutorial / 实验 等；班号写 D119 / D091 这种。',
+  '教师、教室、周次都各有字段，一律不要塞进课名；课名里也不要带学分、括号备注、上课日期。',
   '规则：',
   '1) day 用数字 1-7，分别代表周一至周日；',
   '2) start/end 用 24 小时制 "HH:MM"；若表里是"第N节"，按此对照换算：',
@@ -3134,7 +3276,7 @@ const AI_LIST_PROMPT = [
   '4) 课表里常见合并单元格：同一门课占连续多节，请按它实际占用的行范围给出 start/end；',
   '5) 同一门课出现在多天或多时段时，输出多条同名记录，day/时间不同；',
   '6) 若一个格子里写了两门课，拆成两条记录；',
-  '7) 看不清或没有的字段用空字符串，绝不编造；课名看不清就照原样抄写，不要猜测；',
+  '7) 看不清或没有的字段用空字符串，绝不编造；课名看不清就照原样抄写、不要猜测，但仍按上面的「代码 课型-班号」分段；',
   '8) 若我给的是"课程名 教师 周次 节次"这类流水账文本，同样整理成上面的 JSON：',
   '   把教师从课名里拆出来放进 teacher，节次换算成 start/end，周次放进 weeks。',
   '我现在把课表发给你。'
@@ -5341,7 +5483,8 @@ window.CourseSchedule = {
   exportJSON, exportPNG,
   openEditor, openSettings,
   /* 课程块排版（周视图）：字号与行数自适应的纯函数，便于测试与排查 */
-  layout: { colWidth: boardColWidth, font: blkFont, fit: blkLayout, autoColor, recolor: recolorCourses },
+  layout: { colWidth: boardColWidth, font: blkFont, fit: blkLayout, autoColor, recolor: recolorCourses,
+            parts: nameParts, chunks: wrapChunks, pack: packLines, textPx, fontFor: blkFont2, plan: blkPlan },
   /* 课程配色：不同课不同色、同名课同色 */
   palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix,
              sameName: alignSameName, sameNameConflict: hasSameNameConflict, majority: majorityColor,
@@ -5410,7 +5553,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.17.21';
+const APP_VERSION = '2026.09.17.22';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
