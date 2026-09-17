@@ -967,7 +967,8 @@ function defaults(){
     version: 2,
     settings: { theme:'auto', accent:'#4f7cff', dayStart:7, dayEnd:22, hourHeight:56,
                 snap:5, showWeekend:true, firstDay:1, view:'week',
-                totalWeeks:20, termStart: defaultTermStart(), weekFilter:true, reminderMin:10 },
+                totalWeeks:20, termStart: defaultTermStart(), weekFilter:true, reminderMin:10,
+                autoPalette:true },
     people: [p],
     activeId: p.id
   };
@@ -1025,6 +1026,7 @@ function normalize(o){
   s.termStart = /^\d{4}-\d{2}-\d{2}$/.test(String(s.termStart || '')) ? String(s.termStart)
                 : (parseDay(s.termStart) ? isoDay(parseDay(s.termStart)) : d.settings.termStart);
   s.weekFilter = s.weekFilter !== false;
+  s.autoPalette = s.autoPalette !== false;   // 默认开启：不同课自动用不同颜色
   /* 单份课表的课程清洗 + 排序（供各处复用）。
      末尾丢弃「没有任何时间段」的课程：这种课在界面上既显示不出、也点不开，
      纯粹是看不见的脏数据（旧版导入缺陷就会造出这种课），顺带自愈历史脏数据。 */
@@ -1633,23 +1635,85 @@ function openEditor(cid, prefill){
   $('#modal').hidden = false;
 }
 
+/* 为**新建**课程挑初始颜色：优先尚未被占用的调色板颜色（12 门以内保证两两不同） */
 function pickColor(){
   const used = state.courses.map(c => c.color);
   return PALETTE.find(c => !used.includes(c)) || PALETTE[state.courses.length % PALETTE.length];
 }
-/* 按课名把当前课表重新配色（同名课程同色）。
-   历史数据常是「导入进来清一色同一个蓝」——在窄屏色块里，
-   这跟排版一样是可读性杀手：扫一眼分不清哪节是哪门课。
-   新的导入会自动走 autoColor，这个函数用于把老数据一次性理顺。 */
-function recolorCourses(){
-  const byName = new Map();
-  let n = 0;
-  state.courses.forEach(c => {
-    if (!byName.has(c.name)) byName.set(c.name, PALETTE[byName.size % PALETTE.length]);
-    const col = byName.get(c.name);
-    if (c.color !== col){ c.color = col; n++; }
+/* 按课名给某门课挑颜色：
+   1) 同一门课在课表里已有颜色 → 直接沿用（保证同名同色，不会再变）；
+   2) 课名派生色没被别的课占用 → 用派生色（稳定，删课加课都不影响别的课）；
+   3) 派生色已被占用 → 取当前用得最少的那个 —— 保证「不同的课」分到不同颜色。 */
+function bestColor(name, selfId){
+  const n = String(name || '').trim();
+  if (!n) return pickColor();
+  const others = state.courses.filter(c => c.id !== selfId);
+  const twin = others.find(c => c.name === n);
+  if (twin) return twin.color;
+  const want = autoColor(n);
+  if (!others.some(c => c.color === want)) return want;
+  const cnt = new Map(PALETTE.map(p => [p, 0]));
+  others.forEach(c => { if (cnt.has(c.color)) cnt.set(c.color, cnt.get(c.color) + 1); });
+  let best = want, bestN = Infinity;
+  PALETTE.forEach(p => { const k = cnt.get(p); if (k < bestN){ bestN = k; best = p; } });
+  return best;
+}
+/* ---- 课程配色 ----
+   目标：**不同课不同色**（一眼分清哪节是哪门课），同名课同色（同一门课永远一个颜色）。
+   做法：先用课名哈希取色——稳定，改课表顺序 / 删课增课都不会让别的课跟着变色；
+   若与已占用的颜色撞车，就从哈希位置往后顺延到第一个空位，保证同一屏里不重复。
+   历史数据里「导入进来清一色同一个蓝」是最常见的一种：那是可读性杀手，
+   和窄屏排版问题一样会让课表变成一坨。colorize() 负责把这种数据一次理顺。 */
+function colorize(courses){
+  const list = Array.isArray(courses) ? courses : [];
+  const names = [];
+  list.forEach(c => { if (!names.includes(c.name)) names.push(c.name); });
+  names.sort((a, b) => String(a).localeCompare(String(b), 'zh'));   // 排序后分配 → 结果与课程顺序无关
+  const used = new Set(), map = new Map();
+  names.forEach(n => {
+    let col = autoColor(n);
+    if (used.has(col)){
+      const start = Math.max(0, PALETTE.indexOf(col));
+      for (let k = 1; k <= PALETTE.length; k++){
+        const cand = PALETTE[(start + k) % PALETTE.length];
+        if (!used.has(cand)){ col = cand; break; }
+      }
+    }
+    used.add(col); map.set(n, col);
   });
-  save(); render();
+  let n = 0;
+  list.forEach(c => {
+    const col = map.get(c.name);
+    if (col && c.color !== col){ c.color = col; n++; }
+  });
+  return n;
+}
+/* 这份课表是不是「清一色」？≥2 门不同课却只用了 1 种颜色 → 需要自动理顺 */
+function isMonochrome(courses){
+  const list = Array.isArray(courses) ? courses : [];
+  const names = new Set(), cols = new Set();
+  list.forEach(c => { names.add(c.name); cols.add(c.color); });
+  return names.size >= 2 && cols.size === 1;
+}
+/* 按课名给**当前课表**重新配色 */
+function recolorCourses(){
+  const n = colorize(state.courses);
+  if (n){ save(); render(); }
+  return n;
+}
+/* 给所有人的课表配色（切到别份课表时同样不会一屏同色） */
+function recolorAll(){
+  let n = 0;
+  (state.people || []).forEach(p => { n += colorize(p.courses); });
+  if (n) save();
+  return n;
+}
+/* 启动时自愈：老数据（导入缺陷留下的清一色）自动理顺一次，用户无需手动点 */
+function autoPaletteFix(){
+  if (!state.settings.autoPalette) return 0;
+  const mono = (state.people || []).filter(p => isMonochrome(p.courses));
+  if (!mono.length) return 0;
+  const n = mono.reduce((a, p) => a + colorize(p.courses), 0);
   return n;
 }
 
@@ -1824,10 +1888,25 @@ function renderEditor(){
     window.addEventListener('pointercancel', up);
   }, true);                                           // capture：.opt/.cur 等都在内部
 
+  /* 新增课程时，课名一填就自动配一个「与他课不同」的颜色；
+     用户只要手动点过色板，就不再自动干预（尊重手动选择）。 */
+  let colorTouched = false;
+  const markSwatch = () => {
+    const g = $('#fColors'); if (!g) return;
+    g.querySelectorAll('.sw').forEach(b => b.setAttribute('aria-pressed',
+      String(String(b.dataset.c || '').toLowerCase() === String(c.color || '').toLowerCase())));
+  };
   $('#fColors').onclick = e => {
     const sw = e.target.closest('.sw'); if (!sw) return;
+    colorTouched = true;
     c.color = sw.dataset.c;
-    $('#fColors').querySelectorAll('.sw').forEach(b => b.setAttribute('aria-pressed', String(b === sw)));
+    markSwatch();
+  };
+  const fname = $('#fName');
+  if (fname) fname.oninput = () => {
+    if (colorTouched || !editing.isNew) return;
+    const col = bestColor(fname.value, c.id);
+    if (col && col !== c.color){ c.color = col; markSwatch(); }
   };
   // 注意：syncFromForm() 会用 DOM 中的行重建 c.sessions，
   // 因此必须先"同步表单 → 再改数据 → 再重绘"，否则改动会被覆盖。
@@ -1939,8 +2018,12 @@ function openSettings(){
       </div>
     </div>
     <div class="setrow">
-      <div class="lb">课程配色<small>给每门课分配不同颜色，一眼分清哪节是哪门课（同名课程同色）</small></div>
-      <button class="btn" id="sRecolor">按课名配色</button>
+      <div class="lb">自动配色<small>不同的课自动用不同颜色，一眼分清哪节是哪门课（同名课同色）</small></div>
+      <button class="switch" id="sAutoColor" aria-pressed="${S.autoPalette !== false}"></button>
+    </div>
+    <div class="setrow">
+      <div class="lb">重新配色<small>把现有课程按课名重排一遍颜色</small></div>
+      <button class="btn" id="sRecolor">立即配色</button>
     </div>
     <div class="setrow">
       <div class="lb">显示周末</div>
@@ -2099,8 +2182,23 @@ function openSettings(){
   const cb = $('#sCloud'); if (cb) cb.onclick = openCloud;
   const rc = $('#sRecolor');
   if (rc) rc.onclick = () => {
-    const n = recolorCourses();
-    toast(n ? ('已为 ' + n + ' 门课程重新配色') : '每门课都已有自己的颜色了');
+    const n = recolorAll();
+    render();
+    toast(n ? ('已为 ' + n + ' 门课程分配不同颜色') : '每门课都已有自己的颜色了');
+  };
+  $('#sAutoColor').onclick = () => {
+    const b = $('#sAutoColor');
+    b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'));
+    const on = b.getAttribute('aria-pressed') === 'true';
+    state.settings.autoPalette = on;
+    save();
+    if (on){
+      const n = recolorAll();
+      render();
+      toast(n ? ('已开启自动配色，为 ' + n + ' 门课程分配了不同颜色') : '已开启自动配色');
+    } else {
+      toast('已关闭自动配色');
+    }
   };
   $('#sTheme').onchange = commit;
   $('#sThemeToggle').onclick = () => {
@@ -2685,6 +2783,7 @@ function impCommit(courses, mode, newName){
   if (mode === 'replace'){ impStash('覆盖当前课表'); state.courses = list; }
   else if (mode === 'new'){ const p = addPerson(newName || '导入课表'); p.courses = list; }
   else state.courses = state.courses.concat(list);
+  autoPaletteFix();   /* 追加后若整份仍是清一色（老数据），顺手理顺 */
   save(); render();
   return list.length;
 }
@@ -2708,6 +2807,7 @@ function impCommitPeople(people, mode){
     const seen = new Set(state.people.map(p => p.id));
     inc.forEach(p => { if (seen.has(p.id)) p.id = uid(); state.people.push({ id: p.id, name: p.name, courses: p.courses }); });
   }
+  autoPaletteFix();   /* 老备份常是清一色，导入后顺手理顺 */
   save(); render();
   return { p: inc.length, c: nC };
 }
@@ -4409,6 +4509,9 @@ function initView(){
    --------------------------------------------------------------------- */
 if (!window.__hotSwapPending){
 state = load();
+/* 老数据自愈：导入缺陷曾让同一份课表清一色同一个蓝，这里在首屏前就理顺成
+   「不同课不同色」（同名课同色）。设置里的「自动配色」关掉即不执行。 */
+if (autoPaletteFix()) save();
 initView();
 render();
 /* 首屏就绪：更新看门狗据此判断"新版真的跑起来了"，比等主脚本跑到最后一行可靠
@@ -4636,6 +4739,7 @@ function applyCloudData(data){
   state.settings = n.settings;
   state.people   = n.people;
   state.activeId = n.activeId;
+  autoPaletteFix();   /* 云端若是老数据（清一色同色），落地即理顺成不同课不同色 */
   save(); render();
 }
 /* 返回 true 表示本次确实应用了云端新数据（调用方据此感知"有更新"） */
@@ -5032,6 +5136,8 @@ window.CourseSchedule = {
   openEditor, openSettings,
   /* 课程块排版（周视图）：字号与行数自适应的纯函数，便于测试与排查 */
   layout: { colWidth: boardColWidth, font: blkFont, fit: blkLayout, autoColor, recolor: recolorCourses },
+  /* 课程配色：不同课不同色、同名课同色 */
+  palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix },
   /* 数据入口 / 出口 */
   openImport, openIO, parseImport: impDetect, parseUnified: impParseUnified,
   /* AI 识图（截图/拍照 → 统一格式 → 导入）：无配置时调用不会有副作用 */
@@ -5094,7 +5200,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.17.18';
+const APP_VERSION = '2026.09.17.19';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
