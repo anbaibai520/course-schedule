@@ -107,12 +107,12 @@
 html[data-theme="light"]{
   --bg:#f2f4f9; --panel:#ffffff; --panel2:#f7f8fc; --text:#171a22;
   --muted:#767d8c; --line:#e5e8f0; --line2:#eef0f6; --shadow:0 6px 24px rgba(20,28,60,.10);
-  --weekend:#f6f7fb; --now:#ef4444;
+  --weekend:#f6f7fb; --now:#ef4444; --preview:#b45309; --preview-line:#f0b429;
 }
 html[data-theme="dark"]{
   --bg:#0f1116; --panel:#181b22; --panel2:#1f232c; --text:#e9ecf3;
   --muted:#98a0b0; --line:#272c37; --line2:#21252e; --shadow:0 6px 24px rgba(0,0,0,.45);
-  --weekend:#161920; --now:#ff5a5a;
+  --weekend:#161920; --now:#ff5a5a; --preview:#fbbf24; --preview-line:#b45309;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0;height:100%;overflow-x:hidden}
@@ -215,6 +215,9 @@ button{cursor:pointer;border:0;background:none}
 .weekbar .wbl{display:inline-flex;align-items:baseline;gap:4px;padding:0 4px;min-width:0}
 .weekbar .wbl b{font-variant-numeric:tabular-nums;font-size:13px}
 .weekbar .wbl em{font-style:normal;font-size:11px;color:var(--muted)}
+/* 预览非当前周时给个暖色提示：一眼能看出「这不是本学期的本周」 */
+.weekbar.pre{border-color:var(--preview-line)}
+.weekbar.pre .wbl{color:var(--preview)}
 .weekbar .wbh{background:var(--accent);color:#fff;border:0;cursor:pointer;font-size:11px;padding:2px 7px;border-radius:999px;font-weight:600}
 .weekbar .wbh:hover{opacity:.9}
 .weekbar .wb-off{display:flex;align-items:center;gap:6px;padding:2px 6px;font-size:12px;color:var(--muted)}
@@ -378,7 +381,7 @@ button{cursor:pointer;border:0;background:none}
 .board-body{display:grid;grid-template-columns:var(--gutter) 1fr;position:relative}
 .gutter{position:relative;border-right:1px solid var(--line);background:var(--panel)}
 .gutter .tick{
-  position:absolute;right:8px;transform:translateY(-50%);font-size:11.5px;color:var(--muted);
+  position:absolute;right:6px;transform:translateY(-50%);font-size:11.5px;color:var(--muted);
   font-variant-numeric:tabular-nums;white-space:nowrap;
 }
 .canvas{
@@ -672,8 +675,11 @@ button{cursor:pointer;border:0;background:none}
      写死会出现「屏越窄、字越大、课名被挤断」的怪象（旧版 12.5px 就是这么断的）。 */
   .chips{min-height:34px;gap:4px}
   :root{--gutter:36px}
-  /* 小屏块内边距再收紧一点，把宽度让给文字 */
-  .blk{padding:4px 4px;border-radius:7px}
+  /* 小屏块内边距再收紧一点，把宽度让给文字。
+     窄屏 7 列时一列只有 ~51px，"Taekwondo" 这类 9 个字母的长词在字号下限
+     7px 下要 ~37.7px，而 4px 内边距只剩 37.4px —— 正好差 0.3px 被省略号吃掉。
+     收到 3px 即可放下，且溢出的余量全留给文字。 */
+  .blk{padding:3px 3px;border-radius:7px}
   /* 列表视图头不挤 */
   .dhead{padding:9px 12px;gap:8px}
   .dname{font-size:13.5px}
@@ -1180,6 +1186,18 @@ function viewWeek(){
   if (!S.weekFilter) return null;
   return ui.viewWeek != null ? clamp(ui.viewWeek, 1, S.totalWeeks) : realWeek();
 }
+/* 手动切周（‹ › / 周数下拉 / 回到本周都走这里）。
+   关键：切到的正是「真实本周」时把 viewWeek 归为 null —— 回到「跟随真实周」，
+   标签显示「本周」而不是「预览」，跨周后也还会自动跟着走。
+   传 null 表示显式回到本周。 */
+function setViewWeek(w){
+  const S = state.settings;
+  if (w == null){ ui.viewWeek = null; render(); return null; }
+  const n = clamp(Math.round(+w) || 1, 1, S.totalWeeks);
+  ui.viewWeek = (n === realWeek()) ? null : n;
+  render();
+  return ui.viewWeek;
+}
 /* 某份课表（可能来自云端同学）对应的"今天第几周" */
 function personWeek(p){
   const S = state.settings;
@@ -1309,8 +1327,13 @@ function renderWeek(){
   }
   bar.classList.add('on');
   const total = S.totalWeeks;
-  const previewing = ui.viewWeek != null;
+  /* 「预览」只用于「看的不是本学期当前这一周」。
+     之前判据是 ui.viewWeek != null —— 只要按过一次 ‹ › 就永久停在预览态：
+     即使切回本周，仍显示「预览 2 / 20 周」，还多挂一个「本周」按钮，
+     像是本学期的课都不对。现在切到真实本周即视为「本周」。 */
+  const previewing = ui.viewWeek != null && ui.viewWeek !== rw;
   const label = previewing ? '预览' : '本周';
+  bar.classList.toggle('pre', previewing);
   bar.innerHTML =
     `<button class="wb" data-w="dec" title="上一周">‹</button>` +
     `<span class="wbl">${label}<b>${wk != null ? wk : '?'}</b><em>/ ${total} 周</em></span>` +
@@ -1371,16 +1394,52 @@ function layout(days){
   return out;
 }
 
-/* ---------- 课程块排版：字号 / 行数自适应 ----------
+/* ---------- 时间刻度栏宽度 ----------
+   刻度字号（11.5px）与左右留白固定，栏宽由「最宽的那个刻度文字」实测决定。
+   小屏的媒体查询曾把 --gutter 写死成 36px：刻度用 tabular-nums 量出来
+   "17:00" 要 ~29px，减去右侧 8px 留白只剩 28px —— 首位数字溢出到栏外，
+   被 .board 的 overflow:hidden 裁掉，于是 17:00 看起来成了 7:00。
+   桌面（58px）本来就够宽，所以只在实测需要更宽时才顶开，不做无谓改动。 */
+const GUTTER_FS = 11.5, GUTTER_PAD = 7;
+/* 刻度的实际字号：优先量上一次渲染留下的 .tick（applyGutter 在 board.innerHTML
+   被替换之前调用，所以上一批刻度还在 DOM 里），量不到才用常量。
+   这样即使将来在 CSS 里调了刻度字号，栏宽也会跟着走，不会又裁字。 */
+function gutterFs(){
+  const t = document.querySelector('#board .gutter .tick');
+  const fs = t ? parseFloat(getComputedStyle(t).fontSize) : 0;
+  return fs > 0 ? fs : GUTTER_FS;
+}
+function gutterWidth(){
+  const S = state.settings, fs = gutterFs();
+  let w = 0;
+  for (let m = S.dayStart * 60; m <= S.dayEnd * 60; m += 60)
+    w = Math.max(w, textPx(fmt(m), fs, 400));
+  return Math.ceil(w) + GUTTER_PAD * 2;      // 左右各留一点呼吸位
+}
+/* 把算好的栏宽落到 #board 上（只在需要顶宽时写 inline，窄→宽时自动收回） */
+function applyGutter(board){
+  board = board || $('#board'); if (!board) return 0;
+  const css = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gutter'));
+  const base = isFinite(css) && css > 0 ? css : 58;
+  const need = Math.max(base, gutterWidth());
+  if (need - base > 0.5) board.style.setProperty('--gutter', need + 'px');
+  else board.style.removeProperty('--gutter');
+  return need;
+}
+/* ---------- 课程块排版：字号 / 行数自适应（按列宽算字号） ----------
    窄屏一周铺 5~7 列时，一列只有 60~75px；而课名常是 "PSP002TC-Lecture"
    这类长串。字号必须跟着列宽走 —— 否则只会得到「屏越窄、字越大、
-   名字被拦腰截断」的结果。 */
+   名字被拦腰截断」的结果。基准取「根元素宽度」，不要用 #scroll.clientWidth
+   或 #board.clientWidth：这两个在滚动条出现时会少掉滚动条宽度（桌面测试环境
+   差 10px），会让字号被算小一档。往下减掉 #scroll 左右内边距、#board 左右边框
+   与时间刻度栏宽。 */
 function boardColWidth(n){
-  /* 基准取「根元素宽度」，不要用 #scroll.clientWidth / #board.clientWidth：
-     这两个在滚动条出现时会少掉滚动条的宽度（桌面测试环境差 10px），
-     会让字号被算小一档。往下减掉 #scroll 的左右内边距、#board 的左右边框和时间刻度栏。 */
   const sc = $('#scroll'), board = $('#board'), root = document.documentElement;
-  const g = parseFloat(getComputedStyle(root).getPropertyValue('--gutter')) || 58;
+  /* 时间栏宽可能已被 applyGutter() 按实测刻度宽度顶宽（inline 变量挂在 #board 上），
+     以 #board 的解析值为准，取不到再退回根元素的 CSS 值 */
+  const gb = board ? parseFloat(getComputedStyle(board).getPropertyValue('--gutter')) : NaN;
+  const gr = parseFloat(getComputedStyle(root).getPropertyValue('--gutter'));
+  const g = (isFinite(gb) && gb > 0) ? gb : ((isFinite(gr) && gr > 0) ? gr : 58);
   let pad = 0, bd = 0;
   if (sc){ const cs = getComputedStyle(sc); pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0); }
   if (board){ const bs = getComputedStyle(board); bd = (parseFloat(bs.borderLeftWidth) || 0) + (parseFloat(bs.borderRightWidth) || 0); }
@@ -1415,7 +1474,7 @@ function wrapChunks(str){
 /* 文字实测宽度：canvas 量字比「字符数 × 经验系数」准得多 ——
    "Illl" 与 "WWWW" 一样长但宽度差近一倍，靠系数估在窄格里必然算错档位。 */
 let _mctx = null;
-function textPx(str, fs){
+function textPx(str, fs, weight){
   const s = String(str == null ? '' : str);
   if (!s) return 0;
   if (!_mctx){
@@ -1424,7 +1483,9 @@ function textPx(str, fs){
     try { _mctx.font = '700 12px ' + _mctx.__fam; } catch (e){}
     if (!_mctx.font || _mctx.measureText('MM').width < 1) _mctx.__fam = 'sans-serif';
   }
-  _mctx.font = '700 ' + fs + 'px ' + _mctx.__fam;
+  /* weight 默认 700（课程代码是粗体）；时间刻度是常规体，量时间刻度时传 400，
+     否则按粗体量出来的宽度偏大，会把时间栏顶得过宽。 */
+  _mctx.font = (weight || 700) + ' ' + fs + 'px ' + _mctx.__fam;
   return _mctx.measureText(s).width;
 }
 /* 课型自己装箱分行：把 wrapChunks 拆出来的段按可用宽度贪心装进若干行，
@@ -1496,8 +1557,9 @@ function renderBoard(){
   const start = S.dayStart * 60, end = S.dayEnd * 60;
   const H = S.hourHeight;
   const bodyH = (end - start) / 60 * H;
-  const colW = boardColWidth(days.length);   // 一列的实际可用宽度 → 决定块内字号
   const board = $('#board');
+  applyGutter(board);                        // 先按实测刻度文字宽度定时间栏，再算列宽
+  const colW = boardColWidth(days.length);   // 一列的实际可用宽度 → 决定块内字号
   board.onclick = null;                 // 切回网格时清掉列表视图的事件委托
   const isToday = d => d === todayDow();
 
@@ -1523,7 +1585,9 @@ function renderBoard(){
     const top = (it.start - start) / 60 * H;
     const h = Math.max((it.end - it.start) / 60 * H - 2, 20);
     /* 字号：按「这块自己真正能排字的宽度」算（并排挤窄时自动降档）；
-       4px 列间距 + 8px 内边距 + 2px 边框 = 14px 非文字宽度 */
+       4px 列间距 + 8px 内边距 + 2px 边框 = 14px 非文字宽度。
+       窄屏内边距收到 3px，这里估得偏保守（少算 2px），宁可字号小半档，
+       也不让字被挤出去 —— 真正落地后由 fitCodeLines 按实测再收敛。 */
     const textW = colW / it.cols - 14;
     const np = nameParts(it.course.name);
     /* 课型/班号优先用「这个时间段自己的」：同一门课（同课程代码）合并后
@@ -4821,24 +4885,22 @@ $('#daySelect').onchange = e => {
 /* 周次条：‹ › 预览相邻周，"本周"回到真实周，"设置"打开学期配置 */
 $('#weekBar').onclick = e => {
   const b = e.target.closest('[data-w]'); if (!b) return;
-  const S = state.settings;
   const cur = viewWeek() != null ? viewWeek() : realWeek() != null ? realWeek() : 1;
   switch (b.dataset.w) {
-    case 'dec': ui.viewWeek = clamp(cur - 1, 1, S.totalWeeks); render(); break;
-    case 'inc': ui.viewWeek = clamp(cur + 1, 1, S.totalWeeks); render(); break;
-    case 'today': ui.viewWeek = null; render(); break;
+    case 'dec': setViewWeek(cur - 1); break;
+    case 'inc': setViewWeek(cur + 1); break;
+    case 'today': setViewWeek(null); break;
     case 'set': openSettings(); break;
   }
 };
 $('#btnAdd').onclick = () => openEditor(null);
 $('#fab').onclick = () => openEditor(null);
-/* 功能带"周数下拉"（日视图）：选具体周→预览该周；选「本周」→回到当前周 */
+/* 功能带"周数下拉"（日视图）：选具体周→预览该周；选「本周」→回到当前周。
+   选到的正好是真实本周时，setViewWeek 会把它归回「跟随真实周」。 */
 $('#weekSelect').onchange = e => {
   const v = e.target.value;
-  const S = state.settings;
-  if (v === 'this'){ ui.viewWeek = null; }
-  else { ui.viewWeek = clamp(parseInt(v, 10) || 1, 1, S.totalWeeks); }
-  render();
+  if (v === 'this'){ ui.viewWeek = null; render(); }
+  else setViewWeek(parseInt(v, 10) || 1);
 };
 $('#btnPerson').onclick = openPersonManager;
 $('#btnSet').onclick = openSettings;
@@ -5693,7 +5755,12 @@ window.CourseSchedule = {
   openEditor, openSettings,
   /* 课程块排版（周视图）：字号与行数自适应的纯函数，便于测试与排查 */
   layout: { colWidth: boardColWidth, font: blkFont, fit: blkLayout, autoColor, recolor: recolorCourses,
-            parts: nameParts, chunks: wrapChunks, pack: packLines, textPx, fontFor: blkFont2, plan: blkPlan },
+            parts: nameParts, chunks: wrapChunks, pack: packLines, textPx, fontFor: blkFont2, plan: blkPlan,
+            /* 时间刻度栏宽（按实测刻度文字算）与刻度的实际字号，便于测试与排查 */
+            gutter: gutterWidth, gutterFs },
+  /* 周次：真实本周 / 当前显示周 / 手动切周。
+     set(周号) 切到真实本周时会自动回到「跟随真实周」（标签显示「本周」）；set(null) 显式回本周。 */
+  week: { current: realWeek, view: viewWeek, set: setViewWeek, of: weekOfToday },
   /* 课程配色：不同课不同色、同一门课（同课程代码）同色 */
   palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix,
              sameCourse: alignSameCourse, courseConflict: hasCourseColorConflict, majority: majorityColor,
@@ -5767,7 +5834,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.1';
+const APP_VERSION = '2026.09.18.2';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
