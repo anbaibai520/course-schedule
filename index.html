@@ -155,6 +155,10 @@ button{cursor:pointer;border:0;background:none}
 .btn.danger{color:#e5484d;border-color:color-mix(in srgb,#e5484d 40%,var(--line))}
 .btn.danger:hover{background:color-mix(in srgb,#e5484d 12%,transparent);color:#e5484d}
 .btn.icon{padding:8px;width:36px;justify-content:center}
+/* 课表行里的「上课提醒」铃铛：开=描边点亮，关=灰掉降噪 */
+.btn.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.btn.on:hover{filter:brightness(1.04);color:var(--accent)}
+.btn.off{filter:grayscale(1);opacity:.5}
 /* 周数下拉（仅日视图显示，位于功能带"新增课程"旁）：紧凑、样式与 .btn 协调 */
 .week-sel{
   display:inline-flex;align-items:center;gap:4px;position:relative;
@@ -981,7 +985,7 @@ function emit(name, data){ (_ev[name] || []).forEach(f => { try { f(data); } cat
 
 /* ------------------------- 默认数据 ------------------------- */
 function defaults(){
-  const p = { id: uid(), name: '我的课表', courses: [] };
+  const p = { id: uid(), name: '我的课表', courses: [], notify: true };
   return {
     version: 2,
     settings: { theme:'auto', accent:'#4f7cff', dayStart:7, dayEnd:22, hourHeight:56,
@@ -1075,17 +1079,24 @@ function normalize(o){
     people = o.people.map(p => ({
       id: p.id || uid(),
       name: String(p.name || '未命名课表').trim().slice(0, 20) || '未命名课表',
-      courses: normCourses(p.courses)
+      courses: normCourses(p.courses),
+      /* 上课提醒开关：显式 true/false 原样保留；老数据 / 云端来的数据没有这个字段时
+         先留 undefined，等 activeId 定下来再统一补默认值（见下） */
+      notify: typeof p.notify === 'boolean' ? p.notify : undefined
     }));
   } else {
     /* 旧版 v1 结构（顶层 courses）：迁移为名为「我的课表」的一份 */
     people = [{ id: uid(), name: String(o.owner || '我的课表').trim().slice(0, 20) || '我的课表',
-                courses: normCourses(o.courses) }];
+                courses: normCourses(o.courses), notify: undefined }];
   }
   const seen = new Set();
   people.forEach(p => { while (seen.has(p.id)) p.id = uid(); seen.add(p.id); });
   if (!people.length) people = defaults().people;
   const activeId = people.some(p => p.id === o.activeId) ? o.activeId : people[0].id;
+  /* 「上课提醒」默认值：没设置过的课表，**当前选中那份默认开、其余默认关**——
+     与升级前「只提醒当前课表」的行为完全一致；用户一旦在「切换课表」里勾过，
+     就照勾选来，不再跟着选中状态跑（这样可以同时提醒"我的"+"某位室友"）。 */
+  people.forEach(p => { if (typeof p.notify !== 'boolean') p.notify = (p.id === activeId); });
   return attachCourses({ version: 2, settings: s, people, activeId });
 }
 function save(){
@@ -1098,7 +1109,9 @@ function save(){
 /* ------------------------- 本地上课提醒（仅原生安卓） -------------------------
    通过 @capacitor/local-notifications 在上课前 N 分钟弹出系统通知。
    网页 / PWA 端不启用（Capacitor.isNativePlatform() 为 false）。
-   settings.reminderMin：0 = 关闭，否则为提前提醒的分钟数（默认 10）。 */
+   settings.reminderMin：0 = 关闭，否则为提前提醒的分钟数（默认 10）。
+   **提醒哪份课表**：由每份课表自己的开关 person.notify 决定（「切换课表」里那个 🔔），
+   可以多份同时开；与"当前显示的是哪一份"无关，与账号下有几份课表也无关。 */
 let _notifyTimer = null;
 function isNativeApp(){ return !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()); }
 function notifyPlugin(){ return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.LocalNotifications) || null; }
@@ -1108,6 +1121,22 @@ function notifyId(a, b, w){
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0) % 2000000000 + 1;
+}
+/* 系统对单个 App 的待排闹钟有硬上限（AlarmManager 约 500），取 250 留足余量。
+   超出时按「离现在最近」截断，而不是按课程顺序——否则排在后面的课会整学期静默不提醒。 */
+const MAX_NOTIFY = 250;
+const _notifyNoticed = { many: false, inexact: false };   /* 每会话只提示一次，避免每次 save 都弹 */
+function notifyTooMany(dropped){
+  console.warn('上课提醒条数超出上限，已跳过最晚的 ' + dropped + ' 条');
+  if (_notifyNoticed.many) return;
+  _notifyNoticed.many = true;
+  toast('提醒太多，只排了最近的 ' + MAX_NOTIFY + ' 条（可关掉部分课表的 🔔）');
+}
+function notifyInexact(e){
+  console.warn('精确闹钟不可用，已降级为不精确提醒', e);
+  if (_notifyNoticed.inexact) return;
+  _notifyNoticed.inexact = true;
+  toast('提醒时间可能略有偏差：系统未授予「闹钟和提醒」权限');
 }
 async function rescheduleNotifications(){
   if (!isNativeApp()) return;                       // 仅安卓 APK 启用
@@ -1130,9 +1159,16 @@ async function rescheduleNotifications(){
   const lead = +S.reminderMin;
   const curW = realWeek() || 1;
   const now = Date.now();
-  const list = [];
-  const courses = state.courses || [];
-  let guard = 0; const MAX = 250;
+  /* ------------------------------------------------------------------
+     作用范围 = 「切换课表」里勾了 🔔 的课表（person.notify）——既不是"当前显示的那份"，
+     也不是账号下全部课表。默认只有你在用的那一份勾着；勾上的可以多份同时提醒
+     （自己的 + 某位室友的）。老数据由 normalize() 补齐默认值，所以这里只认显式 true。
+     ------------------------------------------------------------------ */
+  const courses = [];
+  (state.people || []).forEach(p => {
+    if (p && p.notify === true && Array.isArray(p.courses)) courses.push(...p.courses);
+  });
+  const all = [];
   for (const c of courses) {
     if (!c || !Array.isArray(c.sessions)) continue;
     for (const s of c.sessions) {
@@ -1145,23 +1181,27 @@ async function rescheduleNotifications(){
         dt.setHours(0, 0, 0, 0);
         dt.setMinutes(dt.getMinutes() + startMin - lead);
         if (dt.getTime() <= now) continue;         // 过期（含本周已过的）跳过
-        if (++guard > MAX) break;
-        list.push({
-          id: notifyId(c.id, s.id, w),
-          title: c.name || '课程提醒',
-          body: DAY_NAMES[d] + ' ' + fmt(startMin) + ' 开始' + (s.location ? ' · ' + s.location : ''),
-          schedule: { at: dt, allowWhileIdle: true, exact: true }
-        });
+        all.push({ at: dt.getTime(), c, s, d, startMin, w });
       }
-      if (guard > MAX) break;
     }
-    if (guard > MAX) break;
   }
+  /* 条数超上限时**按时间取最近的**：先到期的优先，学期末尾的课舍掉。
+     旧实现按课程数组顺序硬截断，排在后面的课整学期静默收不到提醒、且毫无提示。 */
+  all.sort((a, b) => a.at - b.at);
+  if (all.length > MAX_NOTIFY) notifyTooMany(all.length - MAX_NOTIFY);
+  const list = all.slice(0, MAX_NOTIFY).map(x => ({
+    id: notifyId(x.c.id, x.s.id, x.w),
+    title: x.c.name || '课程提醒',
+    body: DAY_NAMES[x.d] + ' ' + fmt(x.startMin) + ' 开始' + (x.s.location ? ' · ' + x.s.location : ''),
+    schedule: { at: new Date(x.at), allowWhileIdle: true, exact: true }
+  }));
   try {
     await LN.cancelAll();
     if (list.length) await LN.schedule({ notifications: list });
   } catch (e) {
-    // 精确闹钟权限不足（Android12+）时降级为不精确排程
+    /* 精确闹钟权限不足（Android 12+ 默认不给 SCHEDULE_EXACT_ALARM）→ 降级为不精确排程，
+       时间可能晚几分钟到十几分钟。这点必须让用户知道，不能默默吞掉。 */
+    notifyInexact(e);
     try {
       const list2 = list.map(n => { const c2 = Object.assign({}, n); c2.schedule = Object.assign({}, c2.schedule); delete c2.schedule.exact; return c2; });
       await LN.schedule({ notifications: list2 });
@@ -2539,7 +2579,7 @@ function openSettings(){
       <button class="switch" id="sWeekFilter" aria-pressed="${!!S.weekFilter}"></button>
     </div>
     <div class="setrow">
-      <div class="lb">上课前提醒<small>仅安卓版：上课前弹系统通知（网页端不提醒）</small></div>
+      <div class="lb">上课前提醒<small>仅安卓版；对「切换课表」里 🔔 开启的课表生效（可多份）</small></div>
       <div style="display:flex;gap:6px;align-items:center">
         <button class="switch" id="sRemind" aria-pressed="${!!(S.reminderMin > 0)}"></button>
         <select id="sRemindMin">
@@ -2848,7 +2888,9 @@ function askText(title, def){
   });
 }
 function addPerson(name){
-  const p = { id: uid(), name: String(name || '新建课表').trim().slice(0, 20) || '新建课表', courses: [] };
+  /* 新表默认开启提醒：它立刻成为你正在看的那份，与升级前的行为一致；
+     只想看不想被提醒，在「切换课表」里点一下铃铛关掉即可 */
+  const p = { id: uid(), name: String(name || '新建课表').trim().slice(0, 20) || '新建课表', courses: [], notify: true };
   state.people.push(p);
   state.activeId = p.id;
   save(); render();
@@ -2857,9 +2899,22 @@ function addPerson(name){
 function switchPerson(id){
   if (!state.people.some(p => p.id === id)) return false;
   state.activeId = id;
+  const p = activePerson();
   save(); render();
-  toast('已切换到「' + activePerson().name + '」');
+  /* 提醒不再跟着"选中"跑，所以切到没勾 🔔 的课表时要说一句，
+     否则用户会以为提醒坏了（实际是这份课表没开提醒） */
+  toast('已切换到「' + p.name + '」' + (p.notify === true ? '' : '（上课提醒未开启）'));
   return true;
+}
+/* 「切换课表」里那个 🔔：切换某份课表的上课提醒开关。
+   开 = 这份课表的课也排提醒（可多份同时开）；关 = 只在这里看、不提醒。
+   返回切换后的状态；内部 save() 会触发提醒重排（防抖 1.5s）。 */
+function togglePersonNotify(id){
+  const p = state.people.find(x => x.id === id);
+  if (!p) return false;
+  p.notify = !(p.notify === true);
+  save(); render();
+  return p.notify;
 }
 async function renamePerson(id){
   const p = state.people.find(x => x.id === id); if (!p) return;
@@ -2881,17 +2936,25 @@ async function removePerson(id){
   save(); render(); toast('已删除「' + p.name + '」');
 }
 function openPersonManager(){
-  const rows = state.people.map((p, i) => `
+  const bell = p => p.notify === true
+    ? { txt: '🔔', cls: ' on', tip: '上课提醒已开启（点一下关闭）' }
+    : { txt: '🔕', cls: ' off', tip: '上课提醒已关闭（点一下开启）' };
+  const rows = state.people.map((p, i) => {
+    const b = bell(p);
+    return `
     <div class="prow ${p.id === state.activeId ? 'cur' : ''}" data-pid="${p.id}" title="点击切换到这份课表">
       <div class="av" style="background:${PALETTE[i % PALETTE.length]}">${esc((p.name || '课').trim().slice(0, 1))}</div>
       <div class="pn"><b>${esc(p.name)}</b><small>${personStats(p)}</small></div>
       <div class="pact">
+        <button class="btn${b.cls}" data-act="notify" data-pid="${p.id}" aria-pressed="${p.notify === true}" title="${b.tip}">${b.txt}</button>
         <button class="btn" data-act="rename" data-pid="${p.id}" title="重命名">✏️</button>
         <button class="btn" data-act="del" data-pid="${p.id}" title="删除">🗑️</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   openModal('切换课表',
-    `<div class="hint" style="margin-bottom:12px">每份课表相互独立，点击任意一行即可切换。新增、改名、删除都不会影响其他课表。</div>
+    `<div class="hint" style="margin-bottom:12px">每份课表相互独立，点击任意一行即可切换。新增、改名、删除都不会影响其他课表。<br>
+       <b>🔔</b> = 这份课表的课也会弹上课提醒，<b>🔕</b> = 只在这里看、不提醒。可以同时开启多份。</div>
      <div class="plist" id="pList">${rows}</div>
      <div class="pnew">
        <input class="inp" id="pNewName" maxlength="20" placeholder="新建课表，例如：室友小李" autocomplete="off">
@@ -2903,6 +2966,19 @@ function openPersonManager(){
     const act = e.target.closest('[data-act]');
     if (act) {
       const pid = act.dataset.pid;
+      if (act.dataset.act === 'notify'){
+        /* 就地开关：不关弹窗、不重绘列表，省得闪一下 */
+        const p = state.people.find(x => x.id === pid);
+        if (!p) return;
+        togglePersonNotify(pid);
+        const b = bell(p);
+        act.textContent = b.txt;
+        act.className = 'btn' + b.cls;
+        act.setAttribute('aria-pressed', String(p.notify === true));
+        act.title = b.tip;
+        toast(b.txt + ' 「' + p.name + '」的上课提醒已' + (p.notify ? '开启' : '关闭'));
+        return;
+      }
       const fn = act.dataset.act === 'rename' ? renamePerson : removePerson;
       closeModal(); await fn(pid); openPersonManager();
       return;
@@ -5371,7 +5447,9 @@ function mergeCloudIntoLocal(data){
     const incoming = normalize({ courses: rp.courses || [] }).courses;
     const mine = local.find(p => String(p.name || '').trim() === name);
     if (!mine){
-      const np = { id: rp.id || uid(), name, courses: incoming };
+      /* 云端独有的课表（你另一台设备上的）：提醒开关跟着云端设置走，没带就默认开 */
+      const np = { id: rp.id || uid(), name, courses: incoming,
+                   notify: typeof rp.notify === 'boolean' ? rp.notify : true };
       state.people.push(np); local.push(np);
       return;
     }
@@ -5488,7 +5566,8 @@ async function cloudPush(){
     data: {
       version: 2,
       settings: state.settings,
-      people: state.people.filter(p => !p.cloud).map(p => ({ id: p.id, name: p.name, courses: p.courses })),
+      /* notify（上课提醒开关）跟着账号走：不带上的话，换设备拉回云端数据时会被重置 */
+      people: state.people.filter(p => !p.cloud).map(p => ({ id: p.id, name: p.name, courses: p.courses, notify: p.notify === true })),
       activeId: state.activeId
     },
     updated_at: stamp
@@ -5548,7 +5627,7 @@ async function cloudSyncSubs(){
     const courses = src.length ? (src[0].courses || []) : [];
     const pid = 'c_' + s.user_id;
     let p = state.people.find(x => x.id === pid);
-    if (!p){ p = { id: pid, name: '', courses: [] }; state.people.push(p); }
+    if (!p){ p = { id: pid, name: '', courses: [], notify: false }; state.people.push(p); }
     p.name = prof.nickname || '同学';
     p.cloud = { uid: s.user_id, code: prof.share_code };
     /* 把对方开学/周次设置快照带上，让"同学课表"也能按其自己的学期算今天是第几周 */
@@ -6055,6 +6134,10 @@ window.CourseSchedule = {
   /* 周次：真实本周 / 当前显示周 / 手动切周。
      set(周号) 切到真实本周时会自动回到「跟随真实周」（标签显示「本周」）；set(null) 显式回本周。 */
   week: { current: realWeek, view: viewWeek, set: setViewWeek, of: weekOfToday },
+  /* 上课提醒（仅安卓 APK）：被提醒的课表 = person.notify === true 的那些，可多份同时开；
+     与「当前显示的是哪一份」无关。reschedule() 立即重排（平时靠 save() 后防抖 1.5s 触发）。 */
+  notify: { MAX: MAX_NOTIFY, toggle: togglePersonNotify, reschedule: rescheduleNotifications,
+            on: () => state.people.filter(p => p.notify === true).map(p => ({ id: p.id, name: p.name })) },
   /* 课程配色：不同课不同色、同一门课（同课程代码）同色 */
   palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix,
              sameCourse: alignSameCourse, courseConflict: hasCourseColorConflict, majority: majorityColor,
@@ -6137,7 +6220,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.8';
+const APP_VERSION = '2026.09.18.9';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
