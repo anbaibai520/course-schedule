@@ -5534,13 +5534,78 @@ async function cloudUnsubscribe(targetId){
   await cAuto('/rest/v1/subscriptions?subscriber_id=eq.' + uid + '&target_id=eq.' + targetId, { method: 'DELETE' });
   await cloudSyncSubs();
 }
-function cloudSignOut(){
-  cloudGateDone();   /* 主动退出过就不再弹引导了 */
-  clearRemembered(); /* 主动退出：忘记账号密码，避免本地残留 */
-  cloudSignOutLocal();
-  state.people = state.people.filter(p => !p.cloud);
-  if (!state.people.some(p => p.id === state.activeId)) state.activeId = state.people[0].id;
+/* ---------------------------------------------------------------------
+   退出登录（课表跟着账号走，不留在设备上给下一个账号「接手」）
+   ---------------------------------------------------------------------
+   旧行为：退出只清 session 和「订阅的同学」，本机这份课表原样留着 →
+   换个账号登录时上一个账号的课表还在这儿，甚至被当成"本地数据"参与合并，
+   看起来就是数据串台。
+   现在：退出前问一句要不要先把课表传上云端（不上传就直接清），
+   然后清空本机课表。清空前留一份快照（设置 → 数据 可恢复）。
+   软件设置（外观 / 提示词 / 接口配置 / 学期）属于这台设备，不跟账号走，保留。
+   --------------------------------------------------------------------- */
+function cloudWipeLocal(){
+  impStash('退出登录');               /* 后悔药：设置 → 数据 → 恢复导入前的数据 */
+  const d = defaults();
+  state.people = d.people;            /* 只剩一份空的「我的课表」；订阅来的同学一并清掉 */
+  state.activeId = d.activeId;
+  /* 同步水位跟着账号走：不一起清掉的话，下次换账号会拿上一个账号的
+     updated_at / 订阅签名去比对，可能把新账号的数据当成「没变」而跳过应用 */
+  cloud.meta.subsSig = ''; cloud.meta.myAt = null;
+  cloudPersist();
   save(); render();
+}
+async function cloudSignOut(){
+  const nick = cloudNick() || '当前账号';
+  const mine = state.people.filter(p => !p.cloud);
+  const nC = countCourses(mine), nS = mine.length, nSub = state.people.filter(p => p.cloud).length;
+  const finish = () => {
+    cloudGateDone();      /* 主动退出过就不再弹云同步引导了 */
+    clearRemembered();    /* 忘记账号密码，避免本机残留上一个账号的凭据 */
+    cloudSignOutLocal();  /* 清 session / 档案 / 订阅列表 / 已认路的账号 */
+    cloudWipeLocal();     /* 清掉本机这份课表（先留快照） */
+    cloudPanelBack();     /* 询问弹窗把云面板顶掉了 → 重新打开（此时已是登录页） */
+    toast('已退出登录，本机课表已清空');
+  };
+
+  /* 本机一份课表都没有 → 没什么可保存的，直接退，不拿弹窗烦人 */
+  if (!nC){
+    cloudGateDone(); clearRemembered(); cloudSignOutLocal();
+    cloud.meta.subsSig = ''; cloud.meta.myAt = null; cloudPersist();
+    cloudPanelBack();
+    toast('已退出登录');
+    return;
+  }
+
+  const r = await askModal('退出登录',
+    `本机还有 <b>${nS}</b> 份课表、共 <b>${nC}</b> 门课程属于账号 <b>${esc(nick)}</b>。<br><br>
+     退出后<b>本机课表会被清空</b>，免得下次登录别的账号时数据串在一起。
+     要先把这份课表上传到云端保存吗？（上传后，下次登录这个账号就能原样拉回来）`
+      + (nSub ? `<br><br>另有 <b>${nSub}</b> 位订阅的同学会一并从本机移除。` : ''),
+    [{ label: '取消', value: 'no' },
+     { label: '不上传，直接退出', value: 'drop', cls: 'danger' },
+     { label: '上传后退出', value: 'push', cls: 'primary' }],
+    'no');   /* 点 ✕ / 遮罩关掉 = 先不退 */
+  if (r !== 'drop' && r !== 'push'){ cloudPanelBack(); return; }
+
+  if (r === 'push'){
+    for (;;){
+      try { await cloudPush(); toast('云端已保存这份课表'); break; }
+      catch (e){
+        const r2 = await askModal('上传失败',
+          `没能把课表传到云端：<b>${esc(String((e && e.message) || e || '未知原因'))}</b><br><br>
+           重试一次？也可以仍然退出 —— 退出前会留一份快照，在「设置 → 数据」里能恢复。`,
+          [{ label: '取消退出', value: 'no' },
+           { label: '仍然退出', value: 'drop', cls: 'danger' },
+           { label: '重试上传', value: 'push', cls: 'primary' }],
+          'no');
+        if (r2 === 'push') continue;
+        if (r2 === 'drop') break;
+        cloudPanelBack(); return;      /* 取消退出：本地云端都不动 */
+      }
+    }
+  }
+  finish();
 }
 
 /* ---------------- 云同步面板 ---------------- */
@@ -5672,7 +5737,8 @@ function renderCloud(){
     box.querySelectorAll('[data-unsub]').forEach(b => b.onclick = async () => {
       try { await cloudUnsubscribe(b.dataset.unsub); renderCloud(); render(); } catch (e){ say(e.message || String(e), true); }
     });
-    $('#clOut').onclick = () => { cloudSignOut(); renderCloud(); };
+    /* 退出登录：先问要不要上传云端，再清本机课表（见 cloudSignOut） */
+    $('#clOut').onclick = () => { cloudSignOut(); };
     $('#clCfg').onclick = () => { cloud.cfg.key = ''; cloudPersist(); renderCloud(); };
     return;
   }
@@ -5982,7 +6048,8 @@ window.CourseSchedule = {
     /* 登录时的数据取舍：云端课表并进本地 / 两份课表是否实质相同 */
     mergeIntoLocal: mergeCloudIntoLocal, sameSchedule: scheduleSig, count: countCourses,
     subscribe: cloudSubscribe, unsubscribe: cloudUnsubscribe,
-    signOut: cloudSignOut, status: cloudStatusText,
+    /* 退出登录：先问「要不要上传云端保存」，再清空本机课表（清前留快照） */
+    signOut: cloudSignOut, wipeLocal: cloudWipeLocal, status: cloudStatusText,
     get profile(){ return cloud.profile; },
     get on(){ return cloudOn(); }
   },
@@ -6015,7 +6082,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.6';
+const APP_VERSION = '2026.09.18.7';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
