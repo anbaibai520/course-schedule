@@ -1887,32 +1887,82 @@ function bestColor(name, selfId){
   return best;
 }
 /* ---- 课程配色 ----
-   目标：**不同课不同色**（一眼分清哪节是哪门课），同名课同色（同一门课永远一个颜色）。
+   目标：**不同课不同色**（一眼分清哪节是哪门课），同一门课同色。
    做法：先用课名哈希取色——稳定，改课表顺序 / 删课增课都不会让别的课跟着变色；
    若与已占用的颜色撞车，就从哈希位置往后顺延到第一个空位，保证同一屏里不重复。
+   分组一律按 **courseKey**（课程代码）：CCT001-Lecture-D 与 CCT001-Lecture-E
+   是同一门课的两个时间段，必须同色 —— 早先按整个课名分组，会让它们在课表上
+   变成两种颜色，看着像两门互不相干的课。
    历史数据里「导入进来清一色同一个蓝」是最常见的一种：那是可读性杀手，
    和窄屏排版问题一样会让课表变成一坨。colorize() 负责把这种数据一次理顺。 */
 function colorize(courses){
   const list = Array.isArray(courses) ? courses : [];
-  const names = [];
-  list.forEach(c => { if (!names.includes(c.name)) names.push(c.name); });
-  names.sort((a, b) => String(a).localeCompare(String(b), 'zh'));   // 排序后分配 → 结果与课程顺序无关
+  /* 按 courseKey 归组，组内取第一个出现的课名作为取色依据 */
+  const byKey = new Map();
+  list.forEach(c => { const k = courseKey(c.name); if (!byKey.has(k)) byKey.set(k, c.name); });
+  const keys = [...byKey.keys()].sort((a, b) => String(a).localeCompare(String(b), 'zh'));   // 排序后分配 → 结果与课程顺序无关
   const used = new Set(), map = new Map();
-  names.forEach(n => {
-    let col = autoColor(n);
+  keys.forEach(k => {
+    let col = autoColor(byKey.get(k));
     if (used.has(col)){
       const start = Math.max(0, PALETTE.indexOf(col));
-      for (let k = 1; k <= PALETTE.length; k++){
-        const cand = PALETTE[(start + k) % PALETTE.length];
+      for (let k2 = 1; k2 <= PALETTE.length; k2++){
+        const cand = PALETTE[(start + k2) % PALETTE.length];
         if (!used.has(cand)){ col = cand; break; }
       }
     }
-    used.add(col); map.set(n, col);
+    used.add(col); map.set(k, col);
   });
   let n = 0;
   list.forEach(c => {
-    const col = map.get(c.name);
+    const col = map.get(courseKey(c.name));
     if (col && c.color !== col){ c.color = col; n++; }
+  });
+  return n;
+}
+/* ---- 不同课却同色（部分撞色）----
+   「清一色」只是配色脏数据的一种极端形态；更常见的是**部分撞色**：
+   多次分批导入 / 从别处拷来的备份 / 手动改色，让两门毫不相干的课落到同一个颜色上，
+   一屏里两门课一个色，扫一眼就是分不清。isMonochrome() 抓不到这种（它要求整份只剩 1 色），
+   hasCourseColorConflict() 也抓不到（那管的是「同一门课不同色」）。 */
+function hasDuplicateColor(courses){
+  const list = Array.isArray(courses) ? courses : [];
+  const m = new Map();
+  list.forEach(c => { const k = courseKey(c.name); if (!m.has(k)) m.set(k, c.color); });
+  const cols = [...m.values()];
+  /* 课数超过调色板容量时撞色不可避免，不算「需要修」 */
+  return cols.length <= PALETTE.length && new Set(cols).size < cols.length;
+}
+/* 把撞色的课挪到还没被占用的颜色上 —— 精确修补，尽量少动：
+   按出现顺序走一遍，先到的课保住自己的颜色（那是用户已经认可的配色），
+   后到且撞色的才顺延到下一个空位。调色板用尽则保持原样。 */
+function spreadColors(courses){
+  const list = Array.isArray(courses) ? courses : [];
+  if (!list.length) return 0;
+  const groups = new Map();                                  /* courseKey → 该门课的所有条目 */
+  const order = [];
+  list.forEach(c => {
+    const k = courseKey(c.name);
+    if (!groups.has(k)){ groups.set(k, []); order.push(k); }
+    groups.get(k).push(c);
+  });
+  const used = new Set();
+  let n = 0;
+  order.forEach(k => {
+    const group = groups.get(k);
+    let col = majorityColor(group);
+    if (used.has(col)){
+      const start = Math.max(0, PALETTE.indexOf(col));
+      let cand = '';
+      for (let i = 1; i <= PALETTE.length; i++){
+        const c2 = PALETTE[(start + i) % PALETTE.length];
+        if (!used.has(c2)){ cand = c2; break; }
+      }
+      if (!cand) return;                                     /* 调色板用尽，撞色不可避免 */
+      col = cand;
+    }
+    used.add(col);
+    group.forEach(c => { if (c.color !== col){ c.color = col; n++; } });
   });
   return n;
 }
@@ -2100,9 +2150,9 @@ async function openMergeSame(){
 /* 这份课表是不是「清一色」？≥2 门不同课却只用了 1 种颜色 → 需要自动理顺 */
 function isMonochrome(courses){
   const list = Array.isArray(courses) ? courses : [];
-  const names = new Set(), cols = new Set();
-  list.forEach(c => { names.add(c.name); cols.add(c.color); });
-  return names.size >= 2 && cols.size === 1;
+  const keys = new Set(), cols = new Set();
+  list.forEach(c => { keys.add(courseKey(c.name)); cols.add(c.color); });
+  return keys.size >= 2 && cols.size === 1;
 }
 /* 按课名给**当前课表**重新配色 */
 function recolorCourses(){
@@ -2117,10 +2167,12 @@ function recolorAll(){
   if (n) save();
   return n;
 }
-/* 启动 / 导入 / 云同步时的配色自愈。两级，顺序不能反：
-   ① 同一门课同色 —— 同一门课（同课程代码）的多个时间段统一成一个颜色（精确修补，不动别的课）；
-   ② 不同课不同色 —— 整份课表清一色时按课名重排（老备份最常见的缺陷）。
-   只做「需要才做」的判断，不做无谓的全量重排，避免用户认可的配色被无端打乱。 */
+/* 启动 / 导入 / 云同步时的配色自愈。三级，顺序不能反：
+   ① 同一门课同色 —— 同课程代码的多个时间段统一成一个颜色（精确修补，不动别的课）；
+   ② 不同课不同色 —— 整份清一色（老备份最常见的缺陷）时按课名重排；
+   ③ 不同课不同色 —— 仍有个别课撞色（分批导入 / 手动改色的常见残留）时精确挪色：
+      只动撞的那几门，其余颜色原样保留，不打乱用户已认可的配色。
+   只做「需要才做」的判断，不做无谓的全量重排。 */
 function autoPaletteFix(){
   if (!state.settings.autoPalette) return 0;
   let n = 0;
@@ -2129,6 +2181,7 @@ function autoPaletteFix(){
     if (!list.length) return;
     if (hasCourseColorConflict(list)) n += alignSameCourse(list);
     if (isMonochrome(list)) n += colorize(list);
+    if (hasDuplicateColor(list)) n += spreadColors(list);
   });
   return n;
 }
@@ -6005,6 +6058,8 @@ window.CourseSchedule = {
   /* 课程配色：不同课不同色、同一门课（同课程代码）同色 */
   palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix,
              sameCourse: alignSameCourse, courseConflict: hasCourseColorConflict, majority: majorityColor,
+             /* 不同课撞色：检测 + 把撞色的挪到空闲颜色（精确修补） */
+             dupConflict: hasDuplicateColor, spread: spreadColors,
              /* 旧名保留，避免外部脚本失效 */
              sameName: alignSameCourse, sameNameConflict: hasCourseColorConflict,
              syncCourseColor },
@@ -6082,7 +6137,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.7';
+const APP_VERSION = '2026.09.18.8';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
