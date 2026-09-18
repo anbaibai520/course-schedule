@@ -2536,7 +2536,7 @@ function openSettings(){
       <button class="btn" id="sPrint">打印</button>
     </div>
     <div class="setrow">
-      <div class="lb">一键导入课表<small>粘贴 Excel / 文本，或选文件（JSON / CSV / ICS 日历）</small></div>
+      <div class="lb">导入课表<small>让 AI 整理（复制提示词 → 发给任意 AI → 粘回来），或直接粘贴文本 / 选文件</small></div>
       <button class="btn" id="sImport">导入</button>
     </div>
     ${AI_IMG_ENABLED ? `
@@ -2544,10 +2544,6 @@ function openSettings(){
       <div class="lb">AI 识图导入<small>课表截图或拍照 → AI 识别成统一格式 → 确认后入库</small></div>
       <button class="btn" id="sAiImport">识别</button>
     </div>` : ''}
-    <div class="setrow">
-      <div class="lb">AI 整理课表<small>不填接口也能用：复制提示词 → 粘给任意 AI → 结果粘回导入</small></div>
-      <button class="btn" id="sAiList">打开</button>
-    </div>
     <div class="setrow">
       <div class="lb">备份 / 恢复<small>导出 JSON 存好，换设备时导入即可还原</small></div>
       <button class="btn" id="sIO">备份</button>
@@ -2754,14 +2750,13 @@ function openSettings(){
   $('#sExportImg').onclick = () => { closeModal(); exportPNG(); };
   $('#sPrint').onclick    = () => { closeModal(); setTimeout(() => window.print(), 120); };
   $('#sIO').onclick       = () => { closeModal(); openIO(); };
-  /* 一键导入课表：粘贴 Excel/文本、选文件；AI 识图：截图/拍照 → 识别 → 确认入库 */
+  /* 导入课表：设置里只留这一个入口，点开就是统一的导入向导
+     （让 AI 整理 = 复制提示词 → 打开 AI → 粘回导入；向导第 1 页另有"直接粘贴 / 选文件"的出口）。
+     AI 识图那条路已用 AI_IMG_ENABLED 隐藏，置 true 会自动恢复入口。 */
   const si = $('#sImport');
-  if (si) si.onclick = () => { closeModal(); openImport(); };
+  if (si) si.onclick = () => { closeModal(); openOnboard('tool'); };
   const sai = $('#sAiImport');
   if (sai) sai.onclick = () => { closeModal(); openImport('img'); };
-  /* AI 整理课表：复制提示词 → 外部 AI 整理 → 结果粘回导入（无需配置接口） */
-  const sal = $('#sAiList');
-  if (sal) sal.onclick = () => { closeModal(); openAiList(); };
   $('#sClear').onclick = async () => {
     const r = await askModal('清空课程',
       `将删除「<b>${esc(personName())}</b>」的全部课程数据，且无法撤销。建议先导出备份。`,
@@ -2950,7 +2945,7 @@ $('#fileIn').addEventListener('change', async e => {
 });
 
 /* =====================================================================
-   一键导入课表
+   导入课表
    ---------------------------------------------------------------------
    把外部课表一次性导进来，自动识别来源并统一映射到本应用的课程模型。
      · 文本 / 文件   JSON（本应用备份）· CSV / TSV（Excel 复制粘贴）· ICS 日历 · 纯文本行
@@ -3422,7 +3417,7 @@ const AI_PROMPT = [
    ---------------------------------------------------------------------
    把下面这段提示词复制到任意外部 AI（DeepSeek / 豆包 / Kimi / 元宝…），
    连同课表截图或教务系统复制出来的文字一起发过去，让它吐出统一格式 JSON，
-   再把 JSON 粘回「一键导入课表」即可。
+   再把 JSON 粘回「导入课表」即可。
    输出格式与 AI_PROMPT、impParseUnified 完全一致，两条路径可以互换使用。
    --------------------------------------------------------------------- */
 const AI_LIST_PROMPT = [
@@ -3587,7 +3582,7 @@ function aiResultDialog(res, onRetry){
    「AI 整理课表」面板
    ---------------------------------------------------------------------
    不填任何接口也能用 AI：复制提示词 → 在外部 AI 里连同课表发给它
-   → 把返回的 JSON 粘回「一键导入课表」。
+   → 把返回的 JSON 粘回「导入课表」。
    跳转只用纯 Web 手段（window.open → a[target=_blank] → location.href），
    三级兜底 + 明确提示，避免 WebView 里出现"点了没反应"。
    --------------------------------------------------------------------- */
@@ -3659,7 +3654,7 @@ function openAiList(){
     <div class="hint" style="line-height:1.8;margin-bottom:10px">
       不填任何接口也能用 AI：<b>①</b> 复制下面的提示词 →
       <b>②</b> 打开一个 AI，把提示词和你的课表（<b>截图</b>或从教务系统复制的<b>文字</b>）一起发过去 →
-      <b>③</b> 把 AI 返回的 JSON 粘回「<b>一键导入课表</b>」。<br>
+      <b>③</b> 把 AI 返回的 JSON 粘回「<b>导入课表</b>」。<br>
       课表要素不全也不影响：没有教师 / 教室 / 周次 / 时间也能整理，
       提示词已交代 AI 用占位值并在 <b>note</b> 里标注「待确认」。
     </div>
@@ -3724,7 +3719,7 @@ function openAiList(){
 }
 
 function openImport(startTab){
-  openModal('一键导入课表', `
+  openModal('导入课表', `
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn primary" id="impTabText" style="flex:1">文本 / 文件</button>
       ${AI_IMG_ENABLED ? `<button class="btn" id="impTabImg" style="flex:1">图片识别</button>` : ''}
@@ -5765,11 +5760,13 @@ function renderCloud(){
   showAuth('in');
 }
 
-/* ---------------- 首次使用引导：三步把课表导进来（分步向导，只走一次） ----------------
-   触发：① 本机第一次打开（课表还空着）② 首次注册云账号成功 —— 先到先弹。
-   走完或跳过就记一笔，之后不再打扰；已经编过课表的老用户静默标记，不弹。
-   每一步都是真实按钮（复制提示词 / 打开 AI / 粘回导入），走完一遍就等于把课表导进来了，
-   而不是只讲一遍原理。 */
+/* ---------------- 导入课表：三步走完「复制提示词 → 打开 AI → 粘回导入」 ----------------
+   同一个向导两副面孔：
+   · 首次使用引导（mode 省略）：① 本机第一次打开（课表还空着）② 首次注册云账号成功 —— 先到先弹，
+     走完或跳过就记一笔，之后不再打扰；已经编过课表的老用户静默标记，不弹。
+   · 设置里的日常入口（mode='tool'）：设置页只留「导入课表」一个按钮，点开就是这个向导；
+     第 1 页另给一条"我有现成的文件 / 文本"的出口，直接进导入弹窗。
+   每一步都是真实按钮，走完一遍就等于把课表导进来了，而不是只讲一遍原理。 */
 const ONBOARD_KEY = 'course-onboard-v1';
 function onboardDone(){ try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (e) {} }
 function onboardPending(){ try { return !localStorage.getItem(ONBOARD_KEY); } catch (e) { return false; } }
@@ -5781,36 +5778,46 @@ function onboardMuteForVeterans(){
   onboardDone();
   return true;
 }
-function openOnboard(){
+function openOnboard(mode){
+  const tool = mode === 'tool';      /* true = 设置里点进来的日常入口 */
   let step = 1;
   /* 步骤条：三段短横，走过的点亮 */
   const dots = () => [1, 2, 3].map(i => '<span style="display:inline-block;width:24px;height:4px;border-radius:2px;'
     + 'margin-right:5px;background:' + (i <= step ? 'var(--accent,#4f7cff)' : 'var(--line)') + '"></span>').join('');
   const H = t => '<div style="font-size:15.5px;font-weight:700;line-height:1.5;margin-bottom:8px">' + t + '</div>';
   const P = t => '<div class="hint" style="margin:0 0 8px;line-height:1.75">' + t + '</div>';
+  /* 第 1 页的出口：手上有现成内容的人不必非走 AI 这条路 */
+  const directBtn = () => '<button class="btn" id="obDirect" style="width:100%;box-sizing:border-box;margin-top:6px">'
+    + '📄 我有现成的文件 / 文本，直接导入</button>'
+    + '<div class="hint" style="margin:10px 0 0;text-align:center">'
+    + '想让 AI 按你的习惯整理？<span id="obPrompt" style="color:var(--accent,#4f7cff);cursor:pointer">自定义提示词</span></div>';
 
   const close = () => {
     onboardDone(); closeModal();
-    /* 新用户多半还没看过云同步引导：接着弹一次，但别叠在一起 */
-    if (cloudGatePending()) setTimeout(() => { if ($('#modal').hidden) openCloudGate(); }, 450);
+    /* 只有"首次引导"才接着弹云同步引导；日常入口退出来不该再塞弹窗 */
+    if (!tool && cloudGatePending()) setTimeout(() => { if ($('#modal').hidden) openCloudGate(); }, 450);
+  };
+  /* 去导入弹窗：可顺带把剪贴板里的内容读回来 */
+  const gotoImport = (withClip) => {
+    close();
+    setTimeout(() => {
+      openImport();
+      if (withClip) setTimeout(() => { const b = $('#impClip'); if (b) b.onclick(); }, 160);
+    }, 90);
   };
 
   const wire = () => {
     const sk = $('#obSkip'); if (sk) sk.onclick = close;
+    const dr = $('#obDirect'); if (dr) dr.onclick = () => gotoImport(false);
+    const pp = $('#obPrompt');
+    if (pp) pp.onclick = () => { closeModal(); setTimeout(() => openAiList(), 60); };
     const bk = $('#obBack'); if (bk) bk.onclick = () => { if (step > 1){ step--; draw(); } };
     const cp = $('#obCopy');
     if (cp) cp.onclick = async () => { await copyText(aiListPromptText()); step = 2; draw(); };
     const nx = $('#obNext'); if (nx) nx.onclick = () => { step = 3; draw(); };
     const go = $('#obGo');
-    if (go) go.onclick = () => {
-      close();
-      /* 直接把他送到「导入」并把剪贴板里的内容读进来，省掉一路找按钮 */
-      setTimeout(() => {
-        openImport();
-        setTimeout(() => { const b = $('#impClip'); if (b) b.onclick(); }, 160);
-      }, 90);
-    };
-    /* 平台按钮：复制提示词 + 尽力打开（打不开就把地址亮出来），然后进第 3 步 */
+    if (go) go.onclick = () => gotoImport(true);   /* 关向导 → 开导入 → 读剪贴板 → 识别 */
+    /* 平台按钮：复制提示词 + 尽力打开（打不开就把地址亮出来） */
     $('#mBody').querySelectorAll('[data-obplat]').forEach(b => {
       b.onclick = async () => {
         const p = AI_LIST_PLATFORMS[+b.dataset.obplat];
@@ -5829,10 +5836,13 @@ function openOnboard(){
       + '<div>' + dots() + '</div>'
       + '<div class="hint" style="margin:0">第 ' + step + ' / 3 步</div></div>';
     const body = step === 1
-      ? head + H('先把「整理课表」的提示词复制好')
-        + P('这段提示词负责告诉 AI：你的课表要整理成软件认识的格式。')
+      ? head + H(tool ? '让 AI 帮你把课表整理进来' : '先把「整理课表」的提示词复制好')
+        + P(tool
+          ? '这段提示词负责告诉 AI：你的课表要整理成软件认识的格式。复制 → 发给 AI → 粘回来，三步就好。'
+          : '这段提示词负责告诉 AI：你的课表要整理成软件认识的格式。')
         + P('课表要素不全也没关系 —— 没有教师、教室、周次、时间也能整理，'
           + 'AI 会用占位值并在备注里标注「待确认」，不会卡住。')
+        + directBtn()
       : step === 2
       ? head + H('打开一个 AI，把课表和提示词一起发给它')
         + P('点下面任意一个打开（会顺手再复制一次提示词，防止中途丢了）。')
@@ -5845,14 +5855,14 @@ function openOnboard(){
         + P('在 AI 那边长按选中它输出的 JSON → 复制 → 回到这里点下面的按钮。')
         + P('软件会自动识别并弹出确认框，确认后课表就进来了。');
     const foot = step === 1
-      ? '<button class="btn" id="obSkip">以后再说</button><div class="spacer"></div>'
+      ? '<button class="btn" id="obSkip">' + (tool ? '取消' : '以后再说') + '</button><div class="spacer"></div>'
         + '<button class="btn primary" id="obCopy">📋 复制提示词，下一步</button>'
       : step === 2
       ? '<button class="btn" id="obBack">上一步</button><div class="spacer"></div>'
         + '<button class="btn primary" id="obNext">已拿到 JSON，下一步</button>'
       : '<button class="btn" id="obBack">上一步</button><div class="spacer"></div>'
         + '<button class="btn primary" id="obGo">📋 从剪贴板粘贴并导入</button>';
-    openModal('第一次用？三步把课表导进来', '<div>' + body + '</div>', foot);
+    openModal(tool ? '导入课表' : '第一次用？三步把课表导进来', '<div>' + body + '</div>', foot);
     wire();
   };
   draw();
@@ -6005,7 +6015,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.5';
+const APP_VERSION = '2026.09.18.6';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
