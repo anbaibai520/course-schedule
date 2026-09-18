@@ -2539,10 +2539,11 @@ function openSettings(){
       <div class="lb">一键导入课表<small>粘贴 Excel / 文本，或选文件（JSON / CSV / ICS 日历）</small></div>
       <button class="btn" id="sImport">导入</button>
     </div>
+    ${AI_IMG_ENABLED ? `
     <div class="setrow">
       <div class="lb">AI 识图导入<small>课表截图或拍照 → AI 识别成统一格式 → 确认后入库</small></div>
       <button class="btn" id="sAiImport">识别</button>
-    </div>
+    </div>` : ''}
     <div class="setrow">
       <div class="lb">AI 整理课表<small>不填接口也能用：复制提示词 → 粘给任意 AI → 结果粘回导入</small></div>
       <button class="btn" id="sAiList">打开</button>
@@ -3312,6 +3313,10 @@ async function impUndoImport(){
    · Key 只写入本机 localStorage，不上传到任何第三方（除你配置的这个接口本身）
    · 图片先在本地压缩再上传，省流量、也更快
    ===================================================================== */
+/* 功能开关：AI 识图（图片识别）暂时隐藏。置 true 即恢复入口与整条链路。
+   隐藏的是「图片识别」这条需要自己配接口/Key 的路；「AI 整理课表」（复制提示词给
+   外部 AI，无需任何接口）不受影响，照常可用。 */
+const AI_IMG_ENABLED = false;
 const AI_LS = 'course-ai-v1';
 /* 常见 OpenAI 兼容视觉接口预设（模型名会随服务商调整，故每个预设都带一份候选清单，
    弹窗内可下拉选、也可直接手改）。默认选第一个：硅基流动有免费额度，适合先试通流程。 */
@@ -3722,7 +3727,7 @@ function openImport(startTab){
   openModal('一键导入课表', `
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="btn primary" id="impTabText" style="flex:1">文本 / 文件</button>
-      <button class="btn" id="impTabImg" style="flex:1">图片识别</button>
+      ${AI_IMG_ENABLED ? `<button class="btn" id="impTabImg" style="flex:1">图片识别</button>` : ''}
     </div>
     <div id="impPaneText">
       <div class="hint" style="margin-bottom:8px">
@@ -3736,6 +3741,7 @@ function openImport(startTab){
       </div>
       <input type="file" id="impFile" accept=".json,.csv,.tsv,.ics,.txt,text/*" style="display:none">
     </div>
+    ${AI_IMG_ENABLED ? `
     <div id="impPaneImg" style="display:none">
       <div class="hint" style="margin-bottom:8px">
         把课表<b>截图</b>或<b>拍照</b>交给 AI 识别，自动整理成统一格式，确认后再入库。<br>
@@ -3761,7 +3767,7 @@ function openImport(startTab){
       <input type="file" id="impImgCamIn" accept="image/*" capture="environment" style="display:none">
       <input type="file" id="impImg" accept="image/*" multiple style="display:none">
       <div id="impThumbs" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px"></div>
-    </div>
+    </div>` : ''}
     <div class="hint" id="impState" style="margin-top:10px"></div>`,
     `<div class="spacer"></div><button class="btn" data-close>关闭</button>`);
 
@@ -3820,18 +3826,18 @@ function openImport(startTab){
     toast('已导入 ' + got.p + ' 份课表 · ' + got.c + ' 门课程');
   };
 
-  /* 标签切换 */
+  /* 标签切换（识图隐藏时只保留文本页，tab('img') 也不会切到不存在的元素） */
   const tab = kind => {
-    const isImg = kind === 'img';
+    const isImg = AI_IMG_ENABLED && kind === 'img';
     $('#impTabText').className = 'btn' + (isImg ? '' : ' primary');
-    $('#impTabImg').className = 'btn' + (isImg ? ' primary' : '');
+    const bImg = $('#impTabImg'); if (bImg) bImg.className = 'btn' + (isImg ? ' primary' : '');
     $('#impPaneText').style.display = isImg ? 'none' : '';
-    $('#impPaneImg').style.display = isImg ? '' : 'none';
+    const pImg = $('#impPaneImg'); if (pImg) pImg.style.display = isImg ? '' : 'none';
     impSay('');
   };
   $('#impTabText').onclick = () => tab('text');
-  $('#impTabImg').onclick = () => tab('img');
-  if (startTab === 'img') tab('img');
+  const bImg2 = $('#impTabImg'); if (bImg2) bImg2.onclick = () => tab('img');
+  if (AI_IMG_ENABLED && startTab === 'img') tab('img');
 
   /* 文本/文件 */
   $('#impParse').onclick = async () => {
@@ -3854,6 +3860,7 @@ function openImport(startTab){
   });
 
   /* ---------------------- 图片识别（视觉大模型） ---------------------- */
+  if (AI_IMG_ENABLED) {
   const cfgOf = () => ({
     url:   ($('#aiUrl')   ? $('#aiUrl').value   : '').trim(),
     model: ($('#aiModel') ? $('#aiModel').value : '').trim(),
@@ -3985,9 +3992,10 @@ function openImport(startTab){
     }
     runAi(files);
   };
+  } /* /AI_IMG_ENABLED */
 
   /* 从「重新识别」回到这里时，带着上次的图片自动再跑一次 */
-  if (startTab === 'img' && _impPendingImgs){
+  if (AI_IMG_ENABLED && startTab === 'img' && _impPendingImgs){
     const f = _impPendingImgs; _impPendingImgs = null;
     setTimeout(() => runAi(f), 60);
   }
@@ -5874,7 +5882,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.3';
+const APP_VERSION = '2026.09.18.4';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
