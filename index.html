@@ -3221,7 +3221,7 @@ function impParseUnified(text, total){
         weeks: (s.weeks && typeof s.weeks === 'object') ? s.weeks : impWeeks(s.weeks, total)
       });
     });
-    if (!out.length){ warnings.push('「' + name + '」没有可用的时间段，已跳过'); return; }
+    if (!out.length){ warnings.push('「' + name + '」没有可用的时间段（缺 day 或 start/end），已跳过'); return; }
     rows.push({ name, teacher: String(it.teacher || '').trim(), note: String(it.note || '').trim(), sessions: out });
   });
   return { courses: impMerge(rows), warnings };
@@ -3363,26 +3363,54 @@ function aiShrinkImage(file, maxSide){
   });
 }
 
-const AI_PROMPT = [
-  '你是课表结构化助手。请识别这张课程表图片，把里面的课程整理成 JSON。',
+/* ---------------------------------------------------------------------
+   提示词正文：图片识别与外部 AI 两条路共用
+   ---------------------------------------------------------------------
+   最容易失败的地方不是"识别不准"，而是"要素不齐导致 AI 交白卷"：
+   一张课表可能只有课名，也可能缺教师 / 教室 / 周次 / 星期 / 时间。
+   而本应用入库的硬门槛是「每个时间段必须有 day 与 start/end」（没有时间段的
+   课不入库，见 impParseUnified），所以提示词必须保证这三项一定产出：
+   能看清就填真值；表里确实没有就用兜底值 + 在 note 写「待确认」；
+   绝不允许因为要素缺失就拒绝输出、输出空数组，或让整条记录缺 day / 时间。
+   AI_PROMPT 与 AI_LIST_PROMPT 共用同一段正文，避免两条路径规则各说各话。
+   --------------------------------------------------------------------- */
+const AI_PROMPT_MARK = '要素不一定齐全';    /* 新版提示词指纹：识别旧版内置文本用 */
+const AI_PROMPT_BODY = [
+  '最高优先级：课表要素不一定齐全 —— 有的表有教师、教室、周次、星期、时间，有的只有课名。',
+  '无论缺哪一项，都必须照常输出 JSON：不许拒绝，不许回答"无法识别 / 信息不足 / 请补充信息"，',
+  '不许用文字说明代替 JSON，也不许因为要素缺失就输出空数组；只要里面认得出至少一门课，courses 里就要有对应条目。',
   '只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码块。格式如下：',
-  '{"courses":[{"name":"课程名","teacher":"任课教师","location":"上课地点","day":1,"start":"08:00","end":"09:40","weeks":"1-16"}]}',
-  '课名怎么写（很重要）：统一成「课程代码 + 空格 + 课型-班号」，照抄教务系统的写法，',
-  '例如 "EAP043 Seminar-D119"、"MTH028 Lecture-D114"、"IOT001TC Lecture-D092"、"Taekwondo 跆拳道"。',
-  '课程代码（EAP043 / MTH028 / IOT001TC 这类字母数字组合）一个字母都不能改、不能漏；',
-  '课型写 Seminar / Lecture / Tutorial / 实验 等；班号写 D119 / D091 这种。',
-  '教师、教室、周次都各有字段，一律不要塞进课名；课名里也不要带学分、括号备注、上课日期。',
-  '规则：',
-  '1) day 用数字 1-7，分别代表周一至周日；',
-  '2) start/end 用 24 小时制 "HH:MM"；若表里是"第N节"，按此对照换算：',
-  '   第1节 08:00、第2节 08:55、第3节 10:00、第4节 10:55、第5节 14:00、',
-  '   第6节 14:55、第7节 16:00、第8节 16:55、第9节 19:00、第10节 19:55、第11节 20:50；',
-  '3) weeks 描述周次，如 "1-16"、"1-8"、"单周"、"双周"、"1,3,5"；整学期都上则留空字符串；',
-  '4) 课表里常见合并单元格：同一门课占连续多节，请按它实际占用的行范围给出 start/end；',
-  '5) 同一门课出现在多天或多时段时，输出多条同名记录，day/时间不同；',
-  '6) 若一个格子里写了两门课，拆成两条记录；',
-  '7) 看不清或认不出的字段用空字符串，绝不编造；课名看不清就照原样抄写、不要猜测，但仍按上面的「代码 课型-班号」分段。'
-].join('\n');
+  '{"courses":[{"name":"课程名","teacher":"","location":"","day":1,"start":"08:00","end":"09:40","weeks":"","note":""}]}',
+  '各字段怎么填 —— 有就填真值，没有就按兜底填，绝不因为缺字段而丢掉这门课：',
+  '* name（必填）：统一成「课程代码 + 空格 + 课型-班号」，照抄教务系统的写法，',
+  '  例如 "EAP043 Seminar-D119"、"MTH028 Lecture-D114"、"IOT001TC Lecture-D092"、"Taekwondo 跆拳道"。',
+  '  课程代码（EAP043 / MTH028 / IOT001TC 这类字母数字组合）照抄，不增删、不改写；',
+  '  课型写 Seminar / Lecture / Tutorial / 实验 等，班号写 D119 / D091 这种。',
+  '  若表里本来就没有代码或课型，就把课名整串照抄，不要自己编号、不要拼凑、不要写"未知"。',
+  '* teacher（任课教师）：没有就留空字符串 ""。',
+  '* location（上课地点）：没有就留空字符串 ""。',
+  '* weeks（周次）：写 "1-16"、"1-8"、"单周"、"双周"、"1,3,5"；整学期都上、或表里没写周次，就留空字符串 ""。',
+  '* day（星期，1-7 表示周一至周日）：表里有星期就用表里的（写"周一"也要转成 1）；',
+  '  实在判断不出星期（例如给的是一串不带星期的课程清单）→ 填 1，并在 note 里写 "星期待确认"。',
+  '* start / end（24 小时制 "HH:MM"）：表里自带时间（如 08:00-09:40）就用表里的时间；',
+  '  只写"第N节"时按此对照换算：第1节 08:00、第2节 08:55、第3节 10:00、第4节 10:55、第5节 14:00、',
+  '     第6节 14:55、第7节 16:00、第8节 16:55、第9节 19:00、第10节 19:55、第11节 20:50；',
+  '  完全没有任何时间信息 → 填 "08:00" 与 "09:40"，并在 note 里写 "时间待确认"。',
+  '* note（备注）：放上面那些"待确认"提示，以及学分、备注等其它信息；没有就留空字符串 ""。',
+  '底线（唯一的绝对要求）：day / start / end 三个字段必须存在且是可用值。',
+  '  这三项留空或省掉，这门课就无法导入、整条会被丢掉 —— 这是最需要避免的错误。',
+  '  注意区分「表里没有这一项」和「看不清」：表里没有才用兜底值（并写进 note）；',
+  '  看得清就必须填真值，不许偷懒一律套兜底值；只是认不准的文字照原样抄写、不要编造。',
+  '其余规则：',
+  '1) 课表里常见合并单元格：同一门课占连续多节，请按它实际占用的行范围给出 start/end；',
+  '2) 同一门课出现在多天或多时段时，输出多条同名记录，day / 时间不同，不要合并成一条；',
+  '3) 若一个格子里写了两门课，拆成两条记录；',
+  '4) 教师、教室、周次都各有字段，不要塞进课名；课名里也不要带学分、括号备注、上课日期；',
+  '5) 整张表都认不清时，至少把能看清的课都输出 —— 宁可字段留空，也不要丢课。'
+];
+const AI_PROMPT = [
+  '你是课表结构化助手。请识别这张课程表图片，把里面的课程整理成 JSON。'
+].concat(AI_PROMPT_BODY).join('\n');
 
 /* ---------------------------------------------------------------------
    「AI 整理课表」——不配置任何接口也能用 AI 的那条路
@@ -3393,28 +3421,13 @@ const AI_PROMPT = [
    输出格式与 AI_PROMPT、impParseUnified 完全一致，两条路径可以互换使用。
    --------------------------------------------------------------------- */
 const AI_LIST_PROMPT = [
-  '你是课表结构化助手。我会给你一份课程表 —— 可能是截图、照片，也可能是从教务系统复制出来的乱文本。',
-  '请把它整理成 JSON，只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码块。格式如下：',
-  '{"courses":[{"name":"课程名","teacher":"任课教师","location":"上课地点","day":1,"start":"08:00","end":"09:40","weeks":"1-16"}]}',
-  '课名怎么写（很重要）：统一成「课程代码 + 空格 + 课型-班号」，照抄教务系统的写法，',
-  '例如 "EAP043 Seminar-D119"、"MTH028 Lecture-D114"、"IOT001TC Lecture-D092"、"Taekwondo 跆拳道"。',
-  '课程代码（EAP043 / MTH028 / IOT001TC 这类字母数字组合）一个字母都不能改、不能漏；',
-  '课型写 Seminar / Lecture / Tutorial / 实验 等；班号写 D119 / D091 这种。',
-  '教师、教室、周次都各有字段，一律不要塞进课名；课名里也不要带学分、括号备注、上课日期。',
-  '规则：',
-  '1) day 用数字 1-7，分别代表周一至周日；',
-  '2) start/end 用 24 小时制 "HH:MM"；若表里是"第N节"，按此对照换算：',
-  '   第1节 08:00、第2节 08:55、第3节 10:00、第4节 10:55、第5节 14:00、',
-  '   第6节 14:55、第7节 16:00、第8节 16:55、第9节 19:00、第10节 19:55、第11节 20:50；',
-  '3) weeks 描述周次，如 "1-16"、"1-8"、"单周"、"双周"、"1,3,5"；整学期都上则留空字符串；',
-  '4) 课表里常见合并单元格：同一门课占连续多节，请按它实际占用的行范围给出 start/end；',
-  '5) 同一门课出现在多天或多时段时，输出多条同名记录，day/时间不同；',
-  '6) 若一个格子里写了两门课，拆成两条记录；',
-  '7) 看不清或没有的字段用空字符串，绝不编造；课名看不清就照原样抄写、不要猜测，但仍按上面的「代码 课型-班号」分段；',
-  '8) 若我给的是"课程名 教师 周次 节次"这类流水账文本，同样整理成上面的 JSON：',
-  '   把教师从课名里拆出来放进 teacher，节次换算成 start/end，周次放进 weeks。',
+  '你是课表结构化助手。我会给你一份课程表 —— 可能是截图、照片，也可能是从教务系统复制出来的乱文本。'
+].concat(AI_PROMPT_BODY, [
+  '6) 若我给的是"课程名 教师 周次 节次"这类流水账文本，同样整理成上面的 JSON：',
+  '   把教师从课名里拆出来放进 teacher，节次换算成 start/end，周次放进 weeks；',
+  '   里面没有星期就按 day 的兜底处理（填 1 并在 note 写 "星期待确认"），不要因为缺项就不输出。',
   '我现在把课表发给你。'
-].join('\n');
+]).join('\n');
 
 /* 跳转目标：只做纯 Web 跳转，不依赖任何原生插件，因此可经热更新直接生效 */
 const AI_LIST_PLATFORMS = [
@@ -3487,7 +3500,10 @@ function aiToCourses(parsed, total){
     }
     if (!rng && (it.time || it.period)) rng = impRange(String(it.time || it.period));
     if (!rng && it.start != null) rng = impRange(String(it.start));
-    if (day == null || !rng){ warnings.push('第 ' + (i + 1) + ' 条时间或星期无法识别，已跳过：' + name); return; }
+    if (day == null || !rng){
+      warnings.push('第 ' + (i + 1) + ' 条缺星期或时间（day / start / end），没有可用的时间段，已跳过：' + name);
+      return;
+    }
     rows.push({ name, teacher: String(it.teacher || '').trim(), note: String(it.note || '').trim(),
       sessions: [{ day, start: rng.start, end: rng.end, location: String(it.location || it.room || '').trim(),
                    weeks: impWeeks(it.weeks != null ? it.weeks : it.weekRange, total) }] });
@@ -3545,11 +3561,11 @@ function aiResultDialog(res, onRetry){
     const r = stat();
     if (!r){ toast('请先修正 JSON 格式'); return; }
     const courses = (r.courses || []).filter(c => c && c.sessions && c.sessions.length);
-    if (!courses.length){ toast('没有可导入的课程（缺少时间段）'); return; }
+    if (!courses.length){ toast('没有可导入的课程：每条都要有 day 与 start/end，可在框里补齐后再导入'); return; }
     const cnt = impCount(courses);
     const n = impCommit(courses, mode);
     closeModal();
-    if (!n){ toast('导入失败：没有可用的时间段'); return; }
+    if (!n){ toast('导入失败：没有可用的时间段（缺 day 或 start/end）'); return; }
     toast((mode === 'new' ? '已新建一份课表，导入 ' : '已导入 ') + n + ' 门课程 · ' + cnt.s + ' 个时间段');
   };
   $('#aiBack').onclick    = () => { if (onRetry) onRetry(); else closeModal(); };
@@ -3570,9 +3586,29 @@ function aiResultDialog(res, onRetry){
    跳转只用纯 Web 手段（window.open → a[target=_blank] → location.href），
    三级兜底 + 明确提示，避免 WebView 里出现"点了没反应"。
    --------------------------------------------------------------------- */
+/* 存的提示词是不是「旧版内置文本」（没有「要素可缺省」那段）？
+   旧版遇到教师/教室/周次/时间缺失的课表，容易让 AI 交白卷或吐空数组。
+   只认旧版内置文本的特征（首句 + 末段流水账规则），用户自己改过的内容不算。 */
+function aiListIsLegacyBuiltin(p){
+  const s = String(p == null ? '' : p).trim();
+  return s.indexOf('你是课表结构化助手') === 0
+    && s.indexOf(AI_PROMPT_MARK) < 0
+    && s.indexOf('8) 若我给的是') >= 0;
+}
+/* 启动时清掉遗留的旧版内置提示词，让新版默认生效（用户无需手动点「恢复默认」）。
+   返回是否改动了设置，由调用方决定要不要落盘。 */
+function aiListPromptMigrate(){
+  const s = state && state.settings;
+  const p = (s && typeof s.aiListPrompt === 'string') ? s.aiListPrompt.trim() : '';
+  if (!p || !aiListIsLegacyBuiltin(p)) return false;
+  s.aiListPrompt = '';
+  return true;
+}
 function aiListPromptText(){
   const s = state && state.settings;
-  return (s && typeof s.aiListPrompt === 'string' && s.aiListPrompt.trim()) ? s.aiListPrompt : AI_LIST_PROMPT;
+  const p = (s && typeof s.aiListPrompt === 'string') ? s.aiListPrompt.trim() : '';
+  if (!p) return AI_LIST_PROMPT;
+  return aiListIsLegacyBuiltin(p) ? AI_LIST_PROMPT : p;
 }
 /* 复制文本：navigator.clipboard 在部分 WebView / 非安全上下文下不可用，带 execCommand 兜底 */
 function copyText(text){
@@ -3618,7 +3654,9 @@ function openAiList(){
     <div class="hint" style="line-height:1.8;margin-bottom:10px">
       不填任何接口也能用 AI：<b>①</b> 复制下面的提示词 →
       <b>②</b> 打开一个 AI，把提示词和你的课表（<b>截图</b>或从教务系统复制的<b>文字</b>）一起发过去 →
-      <b>③</b> 把 AI 返回的 JSON 粘回「<b>一键导入课表</b>」。
+      <b>③</b> 把 AI 返回的 JSON 粘回「<b>一键导入课表</b>」。<br>
+      课表要素不全也不影响：没有教师 / 教室 / 周次 / 时间也能整理，
+      提示词已交代 AI 用占位值并在 <b>note</b> 里标注「待确认」。
     </div>
     <textarea class="inp" id="aiListText" rows="7" spellcheck="false"
       style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;line-height:1.5"></textarea>
@@ -3754,7 +3792,7 @@ function openImport(startTab){
     if (!r || r === 'no') return;
     const n = impCommit(courses, r);
     closeModal();
-    if (!n){ toast('导入失败：没有可用的时间段'); return; }
+    if (!n){ toast('导入失败：没有可用的时间段（缺 day 或 start/end）'); return; }
     toast('已导入 ' + n + ' 门课程 · ' + nS + ' 个时间段');
   };
   /* JSON 备份：按整份课表导入 */
@@ -4990,6 +5028,8 @@ if (state.settings.autoMerge !== false){
   }
 }
 if (autoPaletteFix()) save();
+/* 老用户本机存的旧版内置提示词（会让 AI 在要素不全的课表上交白卷）清掉，交给新版默认 */
+if (aiListPromptMigrate()) save();
 initView();
 render();
 /* 首屏就绪：更新看门狗据此判断"新版真的跑起来了"，比等主脚本跑到最后一行可靠
@@ -5834,7 +5874,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.2';
+const APP_VERSION = '2026.09.18.3';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
