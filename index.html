@@ -3734,6 +3734,7 @@ function openImport(startTab){
         支持 <b>JSON 备份</b>、<b>CSV / Excel 复制粘贴</b>、<b>ICS 日历</b>、<b>纯文本</b>。<br>
         在 Excel 里选中区域 <b>Ctrl+C</b> 后直接粘贴到下框即可。表头建议含：课程、星期、开始、结束、地点、教师（周次可选）。
       </div>
+      <button class="btn" id="impClip" style="width:100%;box-sizing:border-box;margin-bottom:8px">📋 从剪贴板粘贴（AI 的输出直接读回来）</button>
       <textarea class="inp" id="impText" rows="6" placeholder="高等数学&#9;周一&#9;08:00&#9;09:40&#9;教一101&#9;张老师&#9;1-16&#10;大学英语&#9;周三&#9;10:00&#9;11:40&#9;教二203&#9;李老师&#9;单周" style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12.5px"></textarea>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn primary" id="impParse" style="flex:1">解析粘贴内容</button>
@@ -3840,6 +3841,25 @@ function openImport(startTab){
   if (AI_IMG_ENABLED && startTab === 'img') tab('img');
 
   /* 文本/文件 */
+  /* 从剪贴板读回 AI 的输出：省掉手机上「长按 → 粘贴」这一步，读到就直接识别。
+     剪贴板 API 在非安全上下文 / 部分 WebView 里不可用，读不到就给明确指引，不静默失败。 */
+  const impClipBtn = $('#impClip');
+  if (impClipBtn) impClipBtn.onclick = async () => {
+    const ta = $('#impText');
+    let txt = '';
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) txt = await navigator.clipboard.readText();
+    } catch (e){ txt = ''; }
+    if (!String(txt || '').trim()){
+      impSay('没读到剪贴板内容：请先在 AI 里长按选中它输出的 JSON 并「复制」；'
+        + '若系统不允许读取剪贴板，直接长按下面的框手动粘贴也一样', true);
+      if (ta) ta.focus();
+      return;
+    }
+    if (ta) ta.value = txt;
+    impSay('已从剪贴板读入 ' + txt.length + ' 个字符，正在识别…');
+    $('#impParse').click();
+  };
   $('#impParse').onclick = async () => {
     try {
       const res = impDetect($('#impText').value, '', totalWeeks());
@@ -5704,6 +5724,10 @@ function renderCloud(){
             else clearRemembered();
           }
           cloudPanelBack();
+          /* 首次注册成功 → 顺势引导一遍「怎么把课表导进来」：刚注册的账号课表还空着，
+             正是需要它的时候（先关掉云面板，别让两个弹窗叠着）。 */
+          if (mode === 'up' && onboardPending())
+            setTimeout(() => { closeModal(); setTimeout(openOnboard, 150); }, 700);
         } catch (e){ say(cloudErrText(e, mode), true); }
       })();
     };
@@ -5739,6 +5763,99 @@ function renderCloud(){
     }
   };
   showAuth('in');
+}
+
+/* ---------------- 首次使用引导：三步把课表导进来（分步向导，只走一次） ----------------
+   触发：① 本机第一次打开（课表还空着）② 首次注册云账号成功 —— 先到先弹。
+   走完或跳过就记一笔，之后不再打扰；已经编过课表的老用户静默标记，不弹。
+   每一步都是真实按钮（复制提示词 / 打开 AI / 粘回导入），走完一遍就等于把课表导进来了，
+   而不是只讲一遍原理。 */
+const ONBOARD_KEY = 'course-onboard-v1';
+function onboardDone(){ try { localStorage.setItem(ONBOARD_KEY, '1'); } catch (e) {} }
+function onboardPending(){ try { return !localStorage.getItem(ONBOARD_KEY); } catch (e) { return false; } }
+/* 已经编过课表的老用户不必再看导入引导：静默标记成已看过，别平白弹一次 */
+function onboardMuteForVeterans(){
+  if (!onboardPending()) return false;
+  const n = (state.people || []).reduce((a, p) => a + ((p.courses || []).length), 0);
+  if (!n) return false;
+  onboardDone();
+  return true;
+}
+function openOnboard(){
+  let step = 1;
+  /* 步骤条：三段短横，走过的点亮 */
+  const dots = () => [1, 2, 3].map(i => '<span style="display:inline-block;width:24px;height:4px;border-radius:2px;'
+    + 'margin-right:5px;background:' + (i <= step ? 'var(--accent,#4f7cff)' : 'var(--line)') + '"></span>').join('');
+  const H = t => '<div style="font-size:15.5px;font-weight:700;line-height:1.5;margin-bottom:8px">' + t + '</div>';
+  const P = t => '<div class="hint" style="margin:0 0 8px;line-height:1.75">' + t + '</div>';
+
+  const close = () => {
+    onboardDone(); closeModal();
+    /* 新用户多半还没看过云同步引导：接着弹一次，但别叠在一起 */
+    if (cloudGatePending()) setTimeout(() => { if ($('#modal').hidden) openCloudGate(); }, 450);
+  };
+
+  const wire = () => {
+    const sk = $('#obSkip'); if (sk) sk.onclick = close;
+    const bk = $('#obBack'); if (bk) bk.onclick = () => { if (step > 1){ step--; draw(); } };
+    const cp = $('#obCopy');
+    if (cp) cp.onclick = async () => { await copyText(aiListPromptText()); step = 2; draw(); };
+    const nx = $('#obNext'); if (nx) nx.onclick = () => { step = 3; draw(); };
+    const go = $('#obGo');
+    if (go) go.onclick = () => {
+      close();
+      /* 直接把他送到「导入」并把剪贴板里的内容读进来，省掉一路找按钮 */
+      setTimeout(() => {
+        openImport();
+        setTimeout(() => { const b = $('#impClip'); if (b) b.onclick(); }, 160);
+      }, 90);
+    };
+    /* 平台按钮：复制提示词 + 尽力打开（打不开就把地址亮出来），然后进第 3 步 */
+    $('#mBody').querySelectorAll('[data-obplat]').forEach(b => {
+      b.onclick = async () => {
+        const p = AI_LIST_PLATFORMS[+b.dataset.obplat];
+        if (!p) return;
+        const ok = await copyText(aiListPromptText());
+        const el = $('#obSay');
+        if (el) el.textContent = (ok ? '已复制提示词 · ' : '提示词没能自动复制，请手动复制 · ')
+          + '正在打开 ' + p.name + '；没跳转就手动访问 ' + p.url.replace(/^https:\/\//, '');
+        openExternal(p.url);
+      };
+    });
+  };
+
+  const draw = () => {
+    const head = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">'
+      + '<div>' + dots() + '</div>'
+      + '<div class="hint" style="margin:0">第 ' + step + ' / 3 步</div></div>';
+    const body = step === 1
+      ? head + H('先把「整理课表」的提示词复制好')
+        + P('这段提示词负责告诉 AI：你的课表要整理成软件认识的格式。')
+        + P('课表要素不全也没关系 —— 没有教师、教室、周次、时间也能整理，'
+          + 'AI 会用占位值并在备注里标注「待确认」，不会卡住。')
+      : step === 2
+      ? head + H('打开一个 AI，把课表和提示词一起发给它')
+        + P('点下面任意一个打开（会顺手再复制一次提示词，防止中途丢了）。')
+        + P('把你的课表<b>截图</b>或从教务系统复制的<b>文字</b>发过去，让它输出一段 JSON。')
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+        + AI_LIST_PLATFORMS.map((p, i) => '<button class="btn" data-obplat="' + i + '" title="' + esc(p.tip) + '">'
+            + esc(p.name) + '</button>').join('') + '</div>'
+        + '<div class="hint" id="obSay" style="margin:10px 0 0;min-height:17px"></div>'
+      : head + H('回到这里，把 AI 的输出粘回来就完成了')
+        + P('在 AI 那边长按选中它输出的 JSON → 复制 → 回到这里点下面的按钮。')
+        + P('软件会自动识别并弹出确认框，确认后课表就进来了。');
+    const foot = step === 1
+      ? '<button class="btn" id="obSkip">以后再说</button><div class="spacer"></div>'
+        + '<button class="btn primary" id="obCopy">📋 复制提示词，下一步</button>'
+      : step === 2
+      ? '<button class="btn" id="obBack">上一步</button><div class="spacer"></div>'
+        + '<button class="btn primary" id="obNext">已拿到 JSON，下一步</button>'
+      : '<button class="btn" id="obBack">上一步</button><div class="spacer"></div>'
+        + '<button class="btn primary" id="obGo">📋 从剪贴板粘贴并导入</button>';
+    openModal('第一次用？三步把课表导进来', '<div>' + body + '</div>', foot);
+    wire();
+  };
+  draw();
 }
 
 /* ---------------- 首次引导（可跳过，只弹一次） ---------------- */
@@ -5840,6 +5957,8 @@ window.CourseSchedule = {
     commit: impCommit, commitPeople: impCommitPeople, count: impCount, stripFence: impStripFence,
     undoInfo: impUndoInfo, undo: impUndoImport
   },
+  /* 首次使用引导（分步向导：复制提示词 → 打开 AI → 粘回导入） */
+  onboard: { open: openOnboard, pending: onboardPending, done: onboardDone, mute: onboardMuteForVeterans },
   /* 天气 */
   weather: {
     get: () => JSON.parse(JSON.stringify(weather)),
@@ -5867,7 +5986,11 @@ cloudLoad();
    冷启动时与渲染抢连接会明显拖慢"打开"的体感（弱网下更明显）。
    新鲜度窗口 + updated_at 条件比对 + 并发去重，共同消除"每次打开都重复请求"。 */
 if (cloudOn()) afterPaint(() => cloudBootSync());
-else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，可跳过 */
+/* 首次使用引导：先教「怎么把课表导进来」（只对课表还空着的新用户弹一次），
+   再问一次要不要开云同步。已经编过课表的老用户两者都不打扰。 */
+onboardMuteForVeterans();
+if (onboardPending()) openOnboard();
+else if (!cloudOn() && cloudGatePending()) openCloudGate();
 }
 
 /* =====================================================================
@@ -5882,7 +6005,7 @@ else if (cloudGatePending()) openCloudGate();   /* 首次打开引导一次，�
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.4';
+const APP_VERSION = '2026.09.18.5';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
