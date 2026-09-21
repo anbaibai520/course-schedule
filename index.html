@@ -3007,11 +3007,49 @@ function download(name, blob){
   document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 400);
 }
+/* ---------- 真正把文件落到手机上：APK 走原生，网页走浏览器下载 ----------
+   为什么不能只靠 <a download>：Capacitor 的 Android Bridge **没有注册 DownloadListener**，
+   WebView 遇到 blob: / data: 的下载请求会直接丢弃且不报错——用户看到「已导出」的提示，
+   手机里却什么都没有（相册、下载目录都空）。所以 APK 内改由内置插件 MediaSaver
+   经 MediaStore 写盘：图片进相册的「课程表」子目录，备份文件进「下载」目录。
+   网页 / PWA 没有这个插件，仍走原来的浏览器下载。 */
+function savePlugin(){ return (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.MediaSaver) || null; }
+function blobToBase64(blob){
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const s = String(fr.result || ''), i = s.indexOf(',');
+      if (i < 0) reject(new Error('内容读取失败')); else resolve(s.slice(i + 1));
+    };
+    fr.onerror = () => reject(new Error('内容读取失败'));
+    fr.readAsDataURL(blob);
+  });
+}
+/* 统一出口，返回 { web:true } / { path } / { error }，调用方据此给提示 */
+function saveBlob(name, blob, kind){
+  const MS = savePlugin();
+  if (isNativeApp() && MS) {
+    return blobToBase64(blob)
+      .then(b64 => MS.save({ base64: b64, filename: name, mime: blob.type || 'application/octet-stream', kind: kind || 'file' }))
+      .then(r => ({ path: (r && r.path) || '' }))
+      .catch(e => {
+        console.warn('原生保存失败，退回浏览器下载', e);
+        try { download(name, blob); } catch (_) {}
+        return { error: String((e && e.message) || e) };
+      });
+  }
+  download(name, blob);
+  return Promise.resolve({ web: true });
+}
 function exportJSON(){
   const data = JSON.stringify(state, null, 2);
-  download(`课程表备份-${state.people.length > 1 ? state.people.length + '人-' : ''}${new Date().toISOString().slice(0, 10)}.json`,
-    new Blob([data], { type: 'application/json;charset=utf-8' }));
-  toast('备份已导出');
+  const name = `课程表备份-${state.people.length > 1 ? state.people.length + '人-' : ''}${new Date().toISOString().slice(0, 10)}.json`;
+  saveBlob(name, new Blob([data], { type: 'application/json;charset=utf-8' }), 'file')
+    .then(r => {
+      if (r.error) toast('备份导出失败：' + r.error);
+      else if (r.web) toast('备份已导出');
+      else toast('备份已存到' + (r.path || '手机存储'));
+    });
 }
 function openIO(){
   const u = impUndoInfo();
@@ -4221,6 +4259,19 @@ function buildSVG(){
   s += `</svg>`;
   return { svg: s, W, H: TH };
 }
+/* canvas → PNG Blob；老 WebView 没有 toBlob 时退回 dataURL 手工组装 */
+function canvasBlob(cv){
+  return new Promise(resolve => {
+    if (cv.toBlob) { cv.toBlob(b => resolve(b), 'image/png'); return; }
+    try {
+      const s = cv.toDataURL('image/png'), i = s.indexOf(',');
+      const bin = atob(s.slice(i + 1));
+      const arr = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+      resolve(new Blob([arr], { type: 'image/png' }));
+    } catch (e) { resolve(null); }
+  });
+}
 function exportPNG(){
   if (!state.courses.length) { toast('还没有课程可以导出'); return; }
   const { svg, W, H } = buildSVG();
@@ -4232,10 +4283,15 @@ function exportPNG(){
     const ctx = cv.getContext('2d');
     ctx.fillStyle = themeColors().bg; ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.drawImage(img, 0, 0, cv.width, cv.height);
-    cv.toBlob(b => {
-      download(`课程表-${personName()}-${ui.view === 'day' ? DAY_NAMES[ui.day] : '整周'}-${new Date().toISOString().slice(0,10)}.png`, b);
-      toast('图片已导出');
-    }, 'image/png');
+    const name = `课程表-${personName()}-${ui.view === 'day' ? DAY_NAMES[ui.day] : '整周'}-${new Date().toISOString().slice(0,10)}.png`;
+    canvasBlob(cv).then(b => {
+      if (!b) { toast('图片导出失败'); return; }
+      return saveBlob(name, b, 'image').then(r => {
+        if (r.error) toast('图片保存失败：' + r.error);
+        else if (r.web) toast('图片已导出');
+        else toast('图片已存到' + (r.path || '相册'));
+      });
+    }).catch(e => { console.warn('导出图片失败', e); toast('图片导出失败'); });
   };
   img.onerror = () => toast('图片导出失败');
   img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
@@ -6220,7 +6276,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.18.9';
+const APP_VERSION = '2026.09.21.1';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
