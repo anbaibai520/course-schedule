@@ -1138,20 +1138,67 @@ function notifyInexact(e){
   _notifyNoticed.inexact = true;
   toast('提醒时间可能略有偏差：系统未授予「闹钟和提醒」权限');
 }
+/* ------------------------------------------------------------------
+   通知权限：全 App 唯一判定入口。
+   返回 'granted' / 'denied' / 'off'（提醒本身关着，不必打扰）/ 'n/a'（非安卓 / 插件缺失）。
+   · request !== false 时允许弹系统授权框；
+   · 系统框给不出权限时（安卓被拒过一次就不再弹），guide !== false 才弹引导弹窗。
+   —— 排程路径传 guide:false：它每次 save 都会跑，弹引导会没完没了。
+   为什么要在登录时单独查一次：权限没给，提醒一条也发不出去，而用户通常直到
+   漏了一节课才发现；启动/保存时那次是静默的，不会告诉他原因。
+   ------------------------------------------------------------------ */
+const NOTIFY_GUIDE_KEY = 'course-notify-guide-v1';
+function notifyGranted(p){ return !!(p && (p.display === 'granted' || p.notifications === 'granted')); }
+function notifyGuideSeen(uid){ try { const a = JSON.parse(localStorage.getItem(NOTIFY_GUIDE_KEY) || '[]'); return Array.isArray(a) && a.indexOf(uid) >= 0; } catch (e) { return false; } }
+function notifyGuideMark(uid){ try { const a = JSON.parse(localStorage.getItem(NOTIFY_GUIDE_KEY) || '[]'); if (!Array.isArray(a) || a.indexOf(uid) >= 0) return; a.push(uid); localStorage.setItem(NOTIFY_GUIDE_KEY, JSON.stringify(a.slice(-8))); } catch (e) {} }
+async function ensureNotifyPermission(opts){
+  const o = opts || {};
+  if (!isNativeApp()) return 'n/a';                 // 网页 / PWA 没有系统通知权限这回事
+  const LN = notifyPlugin(); if (!LN) return 'n/a';
+  if (!(state.settings.reminderMin > 0)) return 'off';   // 提醒是关的，别拿权限框打扰人
+  let perm = null;
+  try { perm = await LN.checkPermissions(); } catch (e) {}
+  if (notifyGranted(perm)) return 'granted';
+  if (o.request !== false) { try { perm = await LN.requestPermissions(); } catch (e) {} }
+  if (notifyGranted(perm)) { scheduleNotifySoon(); return 'granted'; }   // 刚拿到 → 立刻把提醒排上
+  if (o.guide !== false) notifyPermissionGuide();
+  return 'denied';
+}
+/* 手动去系统设置里开——被永久拒绝后这是唯一的出路，所以路径必须说清 */
+function notifyPermissionGuide(){
+  const uid = cloudUid() || 'local';
+  if (notifyGuideSeen(uid)) return;                              // 每个账号只劝一次
+  notifyGuideMark(uid);
+  askModal('开启通知，上课前才叫得醒你',
+    '系统还没允许「课程表」发通知，上课提醒发不出来。<br><br>'
+    + '请到 <b>手机设置 → 应用 → 课程表 → 通知</b> 里打开「允许通知」，'
+    + '提醒会在上课前 ' + (+state.settings.reminderMin || 10) + ' 分钟弹出。',
+    [{ label: '知道了', value: 'ok', cls: 'primary' }], 'ok');
+}
+/* 登录 / 注册成功后检查一次（挂在登录提交回调里）。
+   注册那次屏幕上会先弹「把课表导进来」引导，所以先挂起，等引导关了再问——
+   否则系统权限框会叠在引导弹窗上面，两个都得点，体验很糟。 */
+let _notifyCheckPending = false, _notifyCheckWaits = 0;
+function deferNotifyCheck(){ _notifyCheckPending = true; _notifyCheckWaits = 0; flushNotifyCheck(); }
+function flushNotifyCheck(){
+  if (!_notifyCheckPending) return;
+  const m = $('#modal');
+  if (m && !m.hidden){                                           // 有弹窗挡着 → 等它关
+    if (_notifyCheckWaits++ >= 30){ _notifyCheckPending = false; return; }   // 最多等约 24 秒，不无限轮询
+    setTimeout(flushNotifyCheck, 800);
+    return;
+  }
+  _notifyCheckPending = false;
+  ensureNotifyPermission();
+}
 async function rescheduleNotifications(){
   if (!isNativeApp()) return;                       // 仅安卓 APK 启用
   const LN = notifyPlugin();
   if (!LN) return;                                  // 插件不可用 → 静默跳过
   const S = state.settings;
   if (!S.reminderMin || S.reminderMin <= 0) { try { await LN.cancelAll(); } catch (e) {} return; }
-  // 权限
-  let perm = null;
-  try { perm = await LN.checkPermissions(); } catch (e) {}
-  if (!perm || (perm.display !== 'granted' && perm.notifications !== 'granted')) {
-    try { perm = await LN.requestPermissions(); } catch (e) {}
-  }
-  const granted = perm && (perm.display === 'granted' || perm.notifications === 'granted');
-  if (!granted) return;                             // 用户未授权 → 跳过
+  /* 权限：走统一入口。这里允许弹系统授权框，但不弹引导弹窗（排程太频繁）。 */
+  if (await ensureNotifyPermission({ guide: false }) !== 'granted') return;                             // 用户未授权 → 跳过
   // 计算未来提醒
   const base = parseDay(S.termStart);
   if (!base) { try { await LN.cancelAll(); } catch (e) {} return; }
@@ -5975,8 +6022,15 @@ function renderCloud(){
           cloudPanelBack();
           /* 首次注册成功 → 顺势引导一遍「怎么把课表导进来」：刚注册的账号课表还空着，
              正是需要它的时候（先关掉云面板，别让两个弹窗叠着）。 */
-          if (mode === 'up' && onboardPending())
+          if (mode === 'up' && onboardPending()){
+            deferNotifyCheck();          /* 先挂起：等导入引导关了再查，别让系统权限框叠上去 */
             setTimeout(() => { closeModal(); setTimeout(openOnboard, 150); }, 700);
+          } else {
+            /* 登录（或注册但不必再引导）：顺手查一次通知权限。没权限的话上课提醒一条也发不出去，
+               而用户通常直到漏了一节课才发现——启动/保存时那次是静默的，不会告诉他原因。
+               非安卓端（网页版）这里是空操作。 */
+            deferNotifyCheck();
+          }
         } catch (e){ say(cloudErrText(e, mode), true); }
       })();
     };
@@ -6050,6 +6104,9 @@ function openOnboard(mode){
     onboardDone(); closeModal();
     /* 只有"首次引导"才接着弹云同步引导；日常入口退出来不该再塞弹窗 */
     if (!tool && cloudGatePending()) setTimeout(() => { if ($('#modal').hidden) openCloudGate(); }, 450);
+    /* 注册时挂起的那次通知权限检查，等引导关了补上。延后一点：紧接着可能开「导入课表」弹窗，
+       flushNotifyCheck 自己会等那个弹窗关掉再问。 */
+    setTimeout(flushNotifyCheck, 300);
   };
   /* 去导入弹窗：可顺带把剪贴板里的内容读回来 */
   const gotoImport = (withClip) => {
@@ -6191,8 +6248,10 @@ window.CourseSchedule = {
      set(周号) 切到真实本周时会自动回到「跟随真实周」（标签显示「本周」）；set(null) 显式回本周。 */
   week: { current: realWeek, view: viewWeek, set: setViewWeek, of: weekOfToday },
   /* 上课提醒（仅安卓 APK）：被提醒的课表 = person.notify === true 的那些，可多份同时开；
-     与「当前显示的是哪一份」无关。reschedule() 立即重排（平时靠 save() 后防抖 1.5s 触发）。 */
+     与「当前显示的是哪一份」无关。reschedule() 立即重排（平时靠 save() 后防抖 1.5s 触发）。
+     perm() 查/要通知权限（登录后自动查一次）；deferCheck/flushCheck 是那次检查的挂起机制。 */
   notify: { MAX: MAX_NOTIFY, toggle: togglePersonNotify, reschedule: rescheduleNotifications,
+            perm: ensureNotifyPermission, deferCheck: deferNotifyCheck, flushCheck: flushNotifyCheck,
             on: () => state.people.filter(p => p.notify === true).map(p => ({ id: p.id, name: p.name })) },
   /* 课程配色：不同课不同色、同一门课（同课程代码）同色 */
   palette: { colorize, bestColor, mono: isMonochrome, recolor: recolorCourses, recolorAll, autoFix: autoPaletteFix,
@@ -6276,7 +6335,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.21.1';
+const APP_VERSION = '2026.09.21.2';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
