@@ -1481,6 +1481,44 @@ function layout(days){
   return out;
 }
 
+/* ---------- 统一块高（2026-09-22）----------
+   旧规则：块高 = (结束 − 开始)/60 × 行高。于是「一门 45 分钟的课」与
+   「一门 95 分钟的连堂课」占的面积差一倍，同一张表看起来大小不一；
+   课程时长只要改一改，整张表的观感就跟着变。
+   新规则：所有课程块统一高度 —— 取「本周实际出现的最短课时」当基准格，
+   夹在 45~60 分钟之间（下限 45 = 一节课，块再小就放不下一行时间了），
+   每块的视觉高度都等于这个基准，与它自己上多久无关。
+   位置仍严格按开始时间对齐（8:00 的课还在 8:00 的位置），所以不会丢失
+   「几点上课」这条信息，只是块不再按分钟拉伸。
+   唯一例外：同一列里两块挨得比基准格还近时，上面那块收窄到刚好不重叠
+   （下限 20px）—— 宁可破一次等大，也不能让两块互相盖住。 */
+function uniformSlotMin(items){
+  let m = 0;
+  (items || []).forEach(it => { const d = it.end - it.start; if (d > 0 && (!m || d < m)) m = d; });
+  return clamp(m || 45, 45, 60);
+}
+/* 每块能用的最大视觉高度（分钟）：同一「天 + 并排列」里不许盖住下一块。
+   返回 Map（键是 layout() 产出的 item 对象本身，身份唯一）。 */
+function blockHeightCaps(items){
+  const groups = new Map();
+  (items || []).forEach(it => {
+    const k = it.day + '|' + it.col;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(it);
+  });
+  const cap = new Map();
+  groups.forEach(arr => {
+    arr.sort((a, b) => a.start - b.start || a.end - b.end);
+    arr.forEach((it, i) => cap.set(it, arr[i + 1] ? arr[i + 1].start - it.start : Infinity));
+  });
+  return cap;
+}
+/* 统一块高（像素）：基准格高度，必要时被「不重叠上限」压一档 */
+function blockHeight(it, slotH, capMin, H, gap){
+  const capPx = isFinite(capMin) ? capMin / 60 * H : slotH;
+  return Math.max(20, Math.min(slotH, capPx) - gap);
+}
+
 /* ---------- 时间刻度栏宽度 ----------
    刻度字号（11.5px）与左右留白固定，栏宽由「最宽的那个刻度文字」实测决定。
    小屏的媒体查询曾把 --gutter 写死成 36px：刻度用 tabular-nums 量出来
@@ -1665,12 +1703,16 @@ function renderBoard(){
       style="left:${i / days.length * 100}%;width:${1 / days.length * 100}%"></div>`).join('');
 
   const items = layout(days);
+  /* 统一块高：先定基准格（分钟→像素），再让每块都用它；位置照旧按分钟对齐。
+     放在这里而不是逐块算，是为了让「一周之内所有块一样大」这件事有唯一来源。 */
+  const slotH = uniformSlotMin(items) / 60 * H;
+  const caps = blockHeightCaps(items);
   let blocks = items.map(it => {
     const i = days.indexOf(it.day);
     const left = (i + it.col / it.cols) / days.length * 100;
     const w = (1 / it.cols) / days.length * 100;
     const top = (it.start - start) / 60 * H;
-    const h = Math.max((it.end - it.start) / 60 * H - 2, 20);
+    const h = blockHeight(it, slotH, caps.get(it), H, 2);
     /* 字号：按「这块自己真正能排字的宽度」算（并排挤窄时自动降档）；
        4px 列间距 + 8px 内边距 + 2px 边框 = 14px 非文字宽度。
        窄屏内边距收到 3px，这里估得偏保守（少算 2px），宁可字号小半档，
@@ -4287,13 +4329,16 @@ function buildSVG(){
   for (let i = 1; i < days.length; i++)
     s += `<line x1="${X0 + gutter + i * colW}" y1="${Y0}" x2="${X0 + gutter + i * colW}" y2="${Y0 + bodyH}" stroke="${C.line}" stroke-width="1"/>`;
 
-  // 课程块
-  layout(days).forEach(it => {
+  // 课程块（块高与屏幕一致：统一基准格，不再按各自时长拉伸）
+  const sItems = layout(days);
+  const slotHsvg = uniformSlotMin(sItems) / 60 * H;
+  const capsSvg = blockHeightCaps(sItems);
+  sItems.forEach(it => {
     const i = days.indexOf(it.day);
     const w = colW / it.cols - 6;
     const x = X0 + gutter + i * colW + (colW / it.cols) * it.col + 3;
     const y = Y0 + (it.start - s0) / 60 * H + 1;
-    const h = Math.max((it.end - it.start) / 60 * H - 3, 18);
+    const h = blockHeight(it, slotHsvg, capsSvg.get(it), H, 3);
     const fg = lum(it.course.color) > 0.62 ? '#16202e' : '#ffffff';
     s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${it.course.color}"/>`;
     let ty = y + 14;
@@ -6243,7 +6288,11 @@ window.CourseSchedule = {
   layout: { colWidth: boardColWidth, font: blkFont, fit: blkLayout, autoColor, recolor: recolorCourses,
             parts: nameParts, chunks: wrapChunks, pack: packLines, textPx, fontFor: blkFont2, plan: blkPlan,
             /* 时间刻度栏宽（按实测刻度文字算）与刻度的实际字号，便于测试与排查 */
-            gutter: gutterWidth, gutterFs },
+            gutter: gutterWidth, gutterFs,
+            /* 统一块高：基准格（分钟）/ 同列不重叠上限 / 像素高，供回归测试锁定 */
+            slot: uniformSlotMin, caps: blockHeightCaps, blkH: blockHeight,
+            /* 导出图片的 SVG 生成器：测试用它核对「导出与屏幕一致」 */
+            svg: buildSVG },
   /* 周次：真实本周 / 当前显示周 / 手动切周。
      set(周号) 切到真实本周时会自动回到「跟随真实周」（标签显示「本周」）；set(null) 显式回本周。 */
   week: { current: realWeek, view: viewWeek, set: setViewWeek, of: weekOfToday },
@@ -6335,7 +6384,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.21.2';
+const APP_VERSION = '2026.09.22.1';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
