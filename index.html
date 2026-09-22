@@ -408,8 +408,9 @@ button{cursor:pointer;border:0;background:none}
    现在：课名按教务系统的写法拆成「课程代码」+「课型/班号」两行 ——
         代码行（--fs）单行不折行，是块里最不能被截断的信息，宁可缩小字号
         也不硬断；课型行（--kfs）次级，可折到 --kp 行，断行只发生在空格/连字符处。
-        时间（--tfs）永远单行。行数按块高夹紧，高度不足时依次牺牲「地点」「时间」，
-        代码行永远保留。三个字号都由 renderBoard 实测字宽后注入。 */
+        时间（--tfs）永远单行。行数按块高夹紧，代码行永远保留；时间与教室是
+        「走到教室」必需的两条信息，优先级仅次于课名，块矮时先牺牲的是课型行，
+        实在放不下就把时间与教室并成一行。三个字号都由 renderBoard 实测字宽后注入。 */
 .blk{
   --fs:12.5px;
   position:absolute;overflow:hidden;border-radius:8px;padding:4px 4px;
@@ -1481,42 +1482,19 @@ function layout(days){
   return out;
 }
 
-/* ---------- 统一块高（2026-09-22）----------
-   旧规则：块高 = (结束 − 开始)/60 × 行高。于是「一门 45 分钟的课」与
-   「一门 95 分钟的连堂课」占的面积差一倍，同一张表看起来大小不一；
-   课程时长只要改一改，整张表的观感就跟着变。
-   新规则：所有课程块统一高度 —— 取「本周实际出现的最短课时」当基准格，
-   夹在 45~60 分钟之间（下限 45 = 一节课，块再小就放不下一行时间了），
-   每块的视觉高度都等于这个基准，与它自己上多久无关。
-   位置仍严格按开始时间对齐（8:00 的课还在 8:00 的位置），所以不会丢失
-   「几点上课」这条信息，只是块不再按分钟拉伸。
-   唯一例外：同一列里两块挨得比基准格还近时，上面那块收窄到刚好不重叠
-   （下限 20px）—— 宁可破一次等大，也不能让两块互相盖住。 */
-function uniformSlotMin(items){
-  let m = 0;
-  (items || []).forEach(it => { const d = it.end - it.start; if (d > 0 && (!m || d < m)) m = d; });
-  return clamp(m || 45, 45, 60);
-}
-/* 每块能用的最大视觉高度（分钟）：同一「天 + 并排列」里不许盖住下一块。
-   返回 Map（键是 layout() 产出的 item 对象本身，身份唯一）。 */
-function blockHeightCaps(items){
-  const groups = new Map();
-  (items || []).forEach(it => {
-    const k = it.day + '|' + it.col;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(it);
-  });
-  const cap = new Map();
-  groups.forEach(arr => {
-    arr.sort((a, b) => a.start - b.start || a.end - b.end);
-    arr.forEach((it, i) => cap.set(it, arr[i + 1] ? arr[i + 1].start - it.start : Infinity));
-  });
-  return cap;
-}
-/* 统一块高（像素）：基准格高度，必要时被「不重叠上限」压一档 */
-function blockHeight(it, slotH, capMin, H, gap){
-  const capPx = isFinite(capMin) ? capMin / 60 * H : slotH;
-  return Math.max(20, Math.min(slotH, capPx) - gap);
+/* ---------- 块高：按时间分配（2026-09-22 修订）----------
+   块高 = 「这节课自己的时长 ÷ 60 × 每小时像素高度」—— 上多久就占多高：
+   45 分钟的课就是比 95 分钟的连堂课矮一半，课时长短一眼可辨。
+   位置同样按分钟对齐，块高与位置天然自洽 —— 同一列里两块的时间段不会重叠
+   （时间冲突的课会被 layout() 排成并排），所以块再高也盖不住下一块。
+   两个「不许影响块高」的量，在这里被明确排除：
+     · 设置里的「时间范围」（dayStart/dayEnd）只决定画布多高、刻度画几条，
+       H 不变 → 块高一个像素都不动；
+     · 只有设置里的「行高」（hourHeight）能缩放块 —— 它是「每小时的像素高度」，
+       本就是缩放控件；若把它也排除，块会与时间刻度错位。
+   下限 20px：再短的课也要留一个可点的块，块内文字由 blkPlan 自动降级。 */
+function blockHeightOf(it, H, gap){
+  return Math.max(20, (it.end - it.start) / 60 * H - gap);
 }
 
 /* ---------- 时间刻度栏宽度 ----------
@@ -1650,25 +1628,34 @@ function blkFont(textW){
 }
 /* 块高 → 该显示哪些行。按「每个子元素真实行高 + 2px 间距」精算，不再用经验系数
    （之前把 --kfs 当成 fs*0.84 算，两个字号一有偏差就少算 1~2px，块内容就溢出了）。
-   优先级：课程代码（必留）> 课型行数 > 时间 > 地点 —— 课型是课名的一部分，
-   宁可少一行时间，也不要把它截断。 */
+   优先级（2026-09-22 修订）：课程代码（必留）> 时间段 + 教室（必留）> 课型行数。
+   理由是「走到教室」这件事必须只靠块面就能完成：几点上、去哪上，缺一不可；
+   课型（Lecture-D 之类）只是课名的补充说明，块矮时先砍它，不砍时间与地点。
+   三行实在塞不下时，把时间段与教室并成一行（merge:true）—— 两者仍都留在块里，
+   只是共用一行，横向由单行省略兜底。
+   merge 只表达「地点并进了时间行」，此时 loc 仍为 false（不单独渲染地点行）。 */
 function blkPlan(h, fs, hasLoc, kindLines, kfs){
   const PAD = 8, GAP = 2;
   const kFn = kfs || fs * 0.84;
-  const t = fs * 0.78 * 1.12;      // 时间行（--tfs = fs*0.78，line-height 1.12）
+  const t = fs * 0.78 * 1.12;      // 时间行 / 地点行（--tfs = fs*0.78，line-height 1.12）
   const c = fs * 1.16;             // 课程代码行（line-height 1.16）
   const k = kFn * 1.14;            // 课型单行（line-height 1.14）
-  const m = t;                     // 老师 · 地点行（与时间行同字号）
   const budget = Math.max(0, h - PAD);
   const span = hs => hs.reduce((a, x) => a + x, 0) + GAP * Math.max(0, hs.length - 1);
   const want = clamp(Math.round(kindLines || 0), 0, 6);
+  /* 第一轮：时间段、教室各占一行（有地点就必须两行齐全）。课型行从多到少逐档让位，
+     直到「代码 + 时间 + 地点」三行刚好放得下。 */
   for (let kp = want; kp >= 0; kp--){
     const hs = [c]; if (kp) hs.push(k * kp);
-    if (hasLoc && span(hs.concat(t, m)) <= budget) return { time: true,  loc: true,  kp, lp: 1 };
-    if (span(hs.concat(t)) <= budget)              return { time: true,  loc: false, kp, lp: 1 };
-    if (span(hs) <= budget)                        return { time: false, loc: false, kp, lp: 1 };
+    if (hasLoc && span(hs.concat(t, t)) <= budget) return { time: true, loc: true,  merge: false, kp, lp: 1 };
+    if (!hasLoc && span(hs.concat(t)) <= budget)   return { time: true, loc: false, merge: false, kp, lp: 1 };
   }
-  return { time: false, loc: false, kp: 0, lp: 1 };
+  /* 第二轮：块高连「代码 + 两行 meta」都放不下 → 时间与教室并成一行，两者都保留 */
+  for (let kp = want; kp >= 0; kp--){
+    const hs = [c]; if (kp) hs.push(k * kp);
+    if (span(hs.concat(t)) <= budget) return { time: true, loc: false, merge: hasLoc, kp, lp: 1 };
+  }
+  return { time: false, loc: false, merge: false, kp: 0, lp: 1 };
 }
 /* 兼容旧签名（回归测试按 {time,loc,lp} 精确比对，不能多带键） */
 function blkLayout(h, fs, hasLoc){
@@ -1703,16 +1690,12 @@ function renderBoard(){
       style="left:${i / days.length * 100}%;width:${1 / days.length * 100}%"></div>`).join('');
 
   const items = layout(days);
-  /* 统一块高：先定基准格（分钟→像素），再让每块都用它；位置照旧按分钟对齐。
-     放在这里而不是逐块算，是为了让「一周之内所有块一样大」这件事有唯一来源。 */
-  const slotH = uniformSlotMin(items) / 60 * H;
-  const caps = blockHeightCaps(items);
   let blocks = items.map(it => {
     const i = days.indexOf(it.day);
     const left = (i + it.col / it.cols) / days.length * 100;
     const w = (1 / it.cols) / days.length * 100;
     const top = (it.start - start) / 60 * H;
-    const h = blockHeight(it, slotH, caps.get(it), H, 2);
+    const h = blockHeightOf(it, H, 2);
     /* 字号：按「这块自己真正能排字的宽度」算（并排挤窄时自动降档）；
        4px 列间距 + 8px 内边距 + 2px 边框 = 14px 非文字宽度。
        窄屏内边距收到 3px，这里估得偏保守（少算 2px），宁可字号小半档，
@@ -1722,8 +1705,12 @@ function renderBoard(){
     /* 课型/班号优先用「这个时间段自己的」：同一门课（同课程代码）合并后
        课名只剩代码，各时间段的课型（Lecture-D / Lecture-E）仍要能看出来 */
     if (it.s.kind) np.kind = it.s.kind;
-    /* 代码行必留、且不能被硬断：先按块高设一个上限，再按代码实测宽度拟合 */
-    const hCap = clamp((h - 8) / (1.16 + 0.84 * 1.14), 7, 15);
+    /* 代码行必留、且不能被硬断：先按块高设一个上限，再按代码实测宽度拟合。
+       上限按「代码行 + 一行时间/地点 + 行间距」算 —— 块里除了课名，必须还塞得下
+       时间段与教室，所以字号上限要服从这两行，而不是服从可牺牲的课型行。
+       那 2px 行间距必须一起减：少减它，字号只大 0.25px，却刚好把 meta 行挤出预算，
+       块里就只剩课名了（宽列字号自动变大时最容易踩到）。 */
+    const hCap = clamp((h - 8 - 2) / (1.16 + 0.78 * 1.12), 7, 15);
     const fs = blkFont2(Math.max(8, textW - 1), [np.code], Math.min(15, hCap), 7);
     /* 课型行次一级：能压成一行就压成一行（跟教务系统一样把 "-D119" 带在同一行），
        这样省下的那一行正好能留给时间/地点；压不成一行才按段折行。
@@ -1735,7 +1722,9 @@ function renderBoard(){
       kOne >= Math.max(7.5, fs * 0.6) && textPx(np.kind, kOne) <= textW;
     const kfs = kOneOk ? kOne : (np.kind ? blkFont2(textW, kChunks, kMax, 7) : kMax);
     const kAll = np.kind ? packLines(kChunks, textW, kfs, kOneOk ? 1 : 3) : [];   // 先看清它一共要几行
-    const loc = [it.course.teacher, it.s.location].filter(Boolean).join(' · ');
+    /* 地点行：教室在前、老师在后 —— 「在哪个教室上课」是必须看见的信息，
+       所以放不下时被截掉的应该是老师，不能是教室。 */
+    const loc = [it.s.location, it.course.teacher].filter(Boolean).join(' · ');
     const lay = blkPlan(h, fs, !!loc, kAll.length, kfs);
     /* 行数被块高夹掉时，在最后一行收省略号 */
     const kLines = lay.kp > 0 ? packLines(kChunks, textW, kfs, lay.kp) : [];
@@ -1744,12 +1733,25 @@ function renderBoard(){
     const tfs = clamp(Math.round(fs * 0.78 * 2) / 2, 7.5, 16);
     const fitsW = s => textPx(s, tfs) <= textW;
     const tFull = fmt(it.start) + '–' + fmt(it.end);
-    const timeText = !lay.time ? '' : (fitsW(tFull) ? tFull : (fitsW(fmt(it.start)) ? fmt(it.start) : ''));
+    const tShort = fmt(it.start);
+    const timeText = !lay.time ? '' : (fitsW(tFull) ? tFull : (fitsW(tShort) ? tShort : ''));
+    /* 块高只够两行（lay.merge）时，时间段与教室必须都留在块里 —— 于是按
+       「完整时间段 + 教室 → 只写开始时间 + 教室 → 只写教室」逐档压缩，
+       取第一个横向也放得下的写法；三级都放不下才交给单行省略兜底，
+       而省略号吃掉的永远是最后面的部分，也就是「时间和教室已写在前头」。
+       合并行只带教室、不带老师：一行里放不下「时间 + 教室 + 老师」三样，
+       而老师是最可省的那个（点开块就能看到），教室不能省。 */
+    let metaText = timeText;
+    if (lay.merge) {
+      const short = it.s.location || it.course.teacher || '';
+      const cand = [tFull, tShort, ''].map(t => [t, short].filter(Boolean).join(' · ')).find(fitsW);
+      metaText = cand != null ? cand : [timeText, short].filter(Boolean).join(' · ');
+    }
     const fg = lum(it.course.color) > 0.62 ? '#16202e' : '#ffffff';
     return `<div class="blk" data-cid="${it.course.id}" data-sid="${it.s.id}"
         title="点击编辑：${esc(np.code)}${np.kind ? ' ' + esc(np.kind) : ''}（${fmt(it.start)}-${fmt(it.end)}）${loc ? ' · ' + esc(loc) : ''}"
         style="left:${left}%;width:calc(${w}% - 4px);top:${top + 1}px;height:${h}px;--c:${it.course.color};--fg:${fg};--fs:${fs}px;--kfs:${kfs}px;--tfs:${tfs}px;--kp:${lay.kp};--lp:1">
-        ${timeText ? `<div class="bt">${timeText}</div>` : ''}
+        ${metaText ? `<div class="bt">${esc(metaText)}</div>` : ''}
         <div class="bn">${esc(np.code)}</div>
         ${kLines.length ? `<div class="bk">${kLines.map(l => `<span>${esc(l)}</span>`).join('')}</div>` : ''}
         ${lay.loc ? `<div class="bm">${esc(loc)}</div>` : ''}
@@ -4329,24 +4331,31 @@ function buildSVG(){
   for (let i = 1; i < days.length; i++)
     s += `<line x1="${X0 + gutter + i * colW}" y1="${Y0}" x2="${X0 + gutter + i * colW}" y2="${Y0 + bodyH}" stroke="${C.line}" stroke-width="1"/>`;
 
-  // 课程块（块高与屏幕一致：统一基准格，不再按各自时长拉伸）
+  // 课程块（块高与屏幕一致：按各自时长分配，上多久占多高；改「时间范围」不影响）
   const sItems = layout(days);
-  const slotHsvg = uniformSlotMin(sItems) / 60 * H;
-  const capsSvg = blockHeightCaps(sItems);
   sItems.forEach(it => {
     const i = days.indexOf(it.day);
     const w = colW / it.cols - 6;
     const x = X0 + gutter + i * colW + (colW / it.cols) * it.col + 3;
     const y = Y0 + (it.start - s0) / 60 * H + 1;
-    const h = blockHeight(it, slotHsvg, capsSvg.get(it), H, 3);
+    const h = blockHeightOf(it, H, 3);
     const fg = lum(it.course.color) > 0.62 ? '#16202e' : '#ffffff';
     s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${it.course.color}"/>`;
-    let ty = y + 14;
-    s += `<text x="${x + 8}" y="${ty}" font-size="10" fill="${fg}" opacity=".85">${fmt(it.start)} - ${fmt(it.end)}</text>`;
-    ty += 15;
-    s += `<text x="${x + 8}" y="${ty}" font-size="13" font-weight="700" fill="${fg}">${esc(fit(it.course.name, 13, w - 16))}</text>`;
-    const sub = [it.course.teacher, it.s.location].filter(Boolean).join(' · ');
-    if (sub && h > 52) { ty += 14; s += `<text x="${x + 8}" y="${ty}" font-size="10.5" fill="${fg}" opacity=".9">${esc(fit(sub, 10.5, w - 16))}</text>`; }
+    /* 教室在前、老师在后（与屏幕一致）。块矮到放不下第三行时，把地点并进
+       时间行 —— 「几点上课 + 去哪个教室」必须都出现在图里，宁可挤一行。 */
+    const loc = [it.s.location, it.course.teacher].filter(Boolean).join(' · ');
+    const timeStr = fmt(it.start) + ' - ' + fmt(it.end);
+    const two = h >= 34, three = h >= 52 && !!loc;
+    if (two) {
+      const head = three ? timeStr : [timeStr, loc].filter(Boolean).join(' · ');
+      let ty = y + 14;
+      s += `<text x="${x + 8}" y="${ty}" font-size="10" fill="${fg}" opacity=".85">${esc(fit(head, 10, w - 16))}</text>`;
+      ty += 15;
+      s += `<text x="${x + 8}" y="${ty}" font-size="13" font-weight="700" fill="${fg}">${esc(fit(it.course.name, 13, w - 16))}</text>`;
+      if (three) { ty += 14; s += `<text x="${x + 8}" y="${ty}" font-size="10.5" fill="${fg}" opacity=".9">${esc(fit(loc, 10.5, w - 16))}</text>`; }
+    } else {
+      s += `<text x="${x + 8}" y="${y + h / 2 + 4}" font-size="12" font-weight="700" fill="${fg}">${esc(fit(it.course.name, 12, w - 16))}</text>`;
+    }
   });
   s += `</svg>`;
   return { svg: s, W, H: TH };
@@ -6289,8 +6298,8 @@ window.CourseSchedule = {
             parts: nameParts, chunks: wrapChunks, pack: packLines, textPx, fontFor: blkFont2, plan: blkPlan,
             /* 时间刻度栏宽（按实测刻度文字算）与刻度的实际字号，便于测试与排查 */
             gutter: gutterWidth, gutterFs,
-            /* 统一块高：基准格（分钟）/ 同列不重叠上限 / 像素高，供回归测试锁定 */
-            slot: uniformSlotMin, caps: blockHeightCaps, blkH: blockHeight,
+            /* 块高（按时间分配）：像素高 = 时长/60 × 行高 − 间距，供回归测试锁定 */
+            blkH: blockHeightOf,
             /* 导出图片的 SVG 生成器：测试用它核对「导出与屏幕一致」 */
             svg: buildSVG },
   /* 周次：真实本周 / 当前显示周 / 手动切周。
@@ -6384,7 +6393,7 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.22.1';
+const APP_VERSION = '2026.09.22.2';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
