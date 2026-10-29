@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "updated_at": "2026-10-29T16:10:12+08:00",
+  "total": 14,
+  "courses": [
+    {
+      "account": "我的账号",
+      "course": "CCT001-2627-S1-Jingsong Wang-Basic Principles of Marxism",
+      "course_url": "https://core.xjtlu.edu.cn/course/view.php?id=1412",
+      "quizzes": [
+        {
+          "name": "16班 Quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=50810",
+          "meta": "Opened: Thursday, 29 October 2026, 14:00 Closed: Thursday, 29 October 2026, 16:00 Done",
+          "first_seen": "2026-10-29T16:08:54+08:00"
+        }
+      ]
+    },
+    {
+      "account": "我的账号",
+      "course": "Exam Page for Calculus I MTH026",
+      "course_url": "https://core.xjtlu.edu.cn/course/view.php?id=1510",
+      "quizzes": [
+        {
+          "name": "Practice quiz 1 - W4",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=38493",
+          "meta": "Opened: Monday, 5 October 2026, 08:59 Closed: Friday, 9 October 2026, 20:30 Done",
+          "first_seen": "2026-10-29T16:09:21+08:00"
+        },
+        {
+          "name": "Practice quiz 2 - W6",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=45438",
+          "meta": "Opened: Monday, 19 October 2026, 08:59 Closed: Friday, 23 October 2026, 20:30 Done",
+          "first_seen": "2026-10-29T16:09:21+08:00"
+        }
+      ]
+    },
+    {
+      "account": "我的账号",
+      "course": "Exam Page for Linear Algebra I MTH028",
+      "course_url": "https://core.xjtlu.edu.cn/course/view.php?id=1513",
+      "quizzes": [
+        {
+          "name": "Practice Quiz 1",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=37047",
+          "meta": "Opened: Monday, 12 October 2026, 08:55 Closed: Friday, 16 October 2026, 21:00 Done",
+          "first_seen": "2026-10-29T16:09:24+08:00"
+        },
+        {
+          "name": "Practice Quiz 2",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=45315",
+          "meta": "Opened: Monday, 26 October 2026, 08:50 Closes: Friday, 30 October 2026, 21:00 To do a. The scope of covers Sections 1.1-2.1. There are only 15 questions in . b.",
+          "first_seen": "2026-10-29T16:09:24+08:00"
+        }
+      ]
+    },
+    {
+      "account": "我的账号",
+      "course": "Grammar Guru",
+      "course_url": "https://core.xjtlu.edu.cn/course/view.php?id=1491",
+      "quizzes": [
+        {
+          "name": "1.2 Countable and uncountable nouns - quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29337",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        },
+        {
+          "name": "2.2 Determiners - quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29341",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        },
+        {
+          "name": "3.2 Adjective Order and Placement - quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29353",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        },
+        {
+          "name": "4.2 Subject – Verb Agreement -quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29566",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        },
+        {
+          "name": "5.2 Modal Verbs 1 - quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29677",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        },
+        {
+          "name": "6.2 Modal Verbs 2 - quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29678",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        },
+        {
+          "name": "1.2 Introduction to Sentence Structures - quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29705",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        },
+        {
+          "name": "2.2 Simple Sentences 1 - quiz",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=29704",
+          "meta": "",
+          "first_seen": "2026-10-29T16:09:31+08:00"
+        }
+      ]
+    },
+    {
+      "account": "我的账号",
+      "course": "Your XJTLU Journey: Starting from Research, Projects and Digital Literacy",
+      "course_url": "https://core.xjtlu.edu.cn/course/view.php?id=280",
+      "quizzes": [
+        {
+          "name": "[Click here👉] Matching——The Five Stages of RLPBL",
+          "url": "https://core.xjtlu.edu.cn/mod/quiz/view.php?id=435",
+          "meta": "",
+          "first_seen": "2026-10-29T16:10:08+08:00"
+        }
+      ]
+    }
+  ]
+}
