@@ -9,8 +9,12 @@
    ① 仅在 App 内启用（网页版本身即最新，不参与）；
    ② window.__hotLoaded 防止替换后的文档再次触发，避免死循环；
    ③ pending/ok 版本比对实现崩溃自动回滚到内置版本；
-      否则浏览器会把原文档剩余内容继续解析进来，造成新旧内容叠加；
-      等待期间先用样式隐藏，避免旧界面闪一下。 */
+   ④ 整份替换必须发生在"干净全局"里 —— 这是本版修复的核心：
+      主页主脚本一旦被解析，顶层 const/let/class 就在「解析期」绑定进全局词法环境，
+      新版脚本再声明同名常量必然抛 SyntaxError 整块失效（运行时 if 拦不住，
+      因为绑定发生在解析期）。所以这里只做"识别 + 转交"，真正的整份替换
+      交给专用装载页 loader.html —— 它自身脚本全在 IIFE 内、只用 var，
+      不占用任何全局绑定，且先写 doctype（否则新文档掉进怪异模式）。 */
 (function(){
   try{
     if (window.__hotLoaded) return;
@@ -23,67 +27,96 @@
     try { info = JSON.parse(localStorage.getItem('course-app-upd') || '{}'); } catch(e){}
     var ok   = localStorage.getItem('course-app-ok') || '';
     var pend = localStorage.getItem('course-app-pending') || '';
-    /* 已知有缺陷的版本：用户已下载但会被引导脚本写坏。命中后直接丢弃缓存回退内置版。
-       v.7: 引导脚本 'replace' 注入看门狗时，反斜杠转义后 document.write 输出真实
-       结束标签，导致 HTML 解析器提前闭合 script 块，body 出现裸 JS 文本。 */
+    var bad  = {};
+    try { bad = JSON.parse(localStorage.getItem('course-app-bad') || '{}'); } catch(e){}
+    /* 已知有缺陷的版本：已下载但跑不起来。命中后直接丢弃缓存回退内置版。 */
     var BROKEN_VERSIONS = { '2026.09.09.7': 1 };
-    if (info.version && BROKEN_VERSIONS[info.version]) {
-      localStorage.removeItem('course-app-hot-html');
-      localStorage.removeItem('course-app-upd');
-      localStorage.removeItem('course-app-pending');
+    var dropCache = function(){
+      try {
+        localStorage.removeItem('course-app-hot-html');
+        localStorage.removeItem('course-app-upd');
+        localStorage.removeItem('course-app-pending');
+      } catch(e){}
+    };
+    /* 分段数值比较（与主脚本 updVerCmp 同语义）：引导脚本在主脚本 IIFE 之外，
+       拿不到那边的函数，只能内联一份。
+       必须用数值而不是字典序：'2026.09.17.19' < '2026.09.17.2' 在字典序下成立，
+       会把 19 版误判成比 2 版旧而丢弃，导致每次启动白下载一遍整页。 */
+    var verCmp = function(a, b){
+      var pa = String(a || '').split('.'), pb = String(b || '').split('.');
+      var n = Math.max(pa.length, pb.length);
+      for (var i = 0; i < n; i++){
+        var x = parseInt(pa[i], 10); if (isNaN(x)) x = 0;
+        var y = parseInt(pb[i], 10); if (isNaN(y)) y = 0;
+        if (x !== y) return x < y ? -1 : 1;
+      }
+      return 0;
+    };
+    var done = '';
+    try { done = sessionStorage.getItem('course-hot-done') || ''; } catch(e){}
+    /* 本次会话刚由 loader 装载完成：当前文档就是新版本，不能再触发装载，
+       否则会 "主页→装载页→新版→再装载" 无限循环。
+       冷启动是新会话，sessionStorage 为空，不会误短路。 */
+    if (done && done === info.version){
+      try { sessionStorage.removeItem('course-hot-done'); } catch(e){}
       return;
     }
-    if (pend && pend !== ok){
-      /* 上次新版未能完成启动：丢弃缓存，强制回退到内置版并硬刷新，避免卡在坏版本 */
-      localStorage.removeItem('course-app-hot-html');
-      localStorage.removeItem('course-app-upd');
-      localStorage.removeItem('course-app-pending');
+    if (info.version && (BROKEN_VERSIONS[info.version] || bad[info.version])) { dropCache(); return; }
+    if (!info.version) return;
+    /* 上次新版未能完成启动 → 回滚。
+       判据是"pending 版本比当前已跑起来的版本更新，却始终没被确认"：装载成功后新版
+       会把 ok 推进到自己的版本并清掉 pending，所以「pending 更新但 ok 没跟上」
+       才是真的启动失败。
+       不用 `pend !== ok` 这种朴素比较：内置版若抢跑把自己的版本号写进 ok，
+       会把一次完全正常的装载误判成失败，进而丢缓存 + 拉黑该版本（实测 BUG-2）。
+       pending 不比 ok 新时（已确认 / 状态异常）不做判断，交给装载页的看门狗裁决 ——
+       误判一次只是白装一遍，误删的代价是白下载 372KB 并永久拉黑。 */
+    if (pend && ok && verCmp(pend, ok) > 0){
+      try {
+        bad[pend] = Date.now(); localStorage.setItem('course-app-bad', JSON.stringify(bad));
+      } catch(e){}
+      dropCache();
       document.write('<style id="hot-hide">html,body{visibility:hidden !important}</style>');
       setTimeout(function(){ try { location.reload(); } catch(e){} }, 600);
       return;
     }
-    if (info.version && info.version !== ok) localStorage.setItem('course-app-pending', info.version);
-    /* 关键：本页（内置版）接下来会被整份替换掉，它自己的启动工作全是白做的。
-       这里打标记，让内置版主脚本跳过渲染/网络/定时器，只留下解析成本——
-       这也是"打开要等两遍"的主要来源（旧实现把整份启动干了两遍，还留下指向已销毁
-       DOM 的定时器与重复请求）。 */
-    window.__hotSwapPending = 1;
-    /* 只藏主界面，不藏 html/body：内置版既然已经不渲染了，就没有"旧界面闪一下"的问题，
-       而加载图（#splash，fixed 铺满）可以在这一瞬先画出来，省掉一段纯白/纯黑等待。
-       老版本内置页（还没跳过启动的）依然会被 .app 规则挡住，不会闪出旧课表。 */
-    document.write('<style id="hot-hide">.app{visibility:hidden !important}</style>');
-    var doReplace = function(){
-      if (window.__hotLoaded) return;
-      window.__hotLoaded = 1;
-      /* 自愈看门狗：新文档若没在 8s 内完成首屏（主脚本 render 之后会置 window.__bootOk），
-         说明替换后的页面脚本异常，立即丢弃并回退到内置版本。
-         判据放在 window 而不是 DOM：document.open() 会清空 DOM，但 window 存活，
-         所以用 DOM 标记做判据在被替换的文档里天然不成立——旧版 8 秒无条件整页重载
-         就是这么来的（等于每次带更新的启动都多跑一遍启动流程）。
-         __bootOk 在首屏渲染完成时即写入（早于任何网络请求），8s 已是数倍余量。
-         guard 脚本还负责把 __hotSwapPending 归零：新文档必须正常运行，不能继承
-         "跳过启动"的标记（window 在整文档替换时是复用的）。
-         v.7 坑：document.write 输出字面结束标签会让 HTML 解析器提前闭合 script 块，
-         后续所有 ' + ' 字面量直接成为 body 文本。正确做法：拼接字符串，不让源代码里
-         出现结束标签完整序列。 */
-      var guardScript = '<script>window.__hotSwapPending=0;setTimeout(function(){' +
-        'if(!window.__bootOk){' +
-        'try{localStorage.removeItem("course-app-hot-html");' +
-        'localStorage.removeItem("course-app-upd");' +
-        'localStorage.removeItem("course-app-pending");}catch(e){}' +
-        'location.replace(location.href);' +
-        '}},8000);<' + '/script>';
+    /* 缓存版本比"当前已跑起来的版本"还旧（例如 APK 已换新版），直接丢弃，防止降级。
+       同样只在没有"未确认装载"在飞时才判断，理由同上。 */
+    if (ok && pend !== info.version && verCmp(info.version, ok) < 0) { dropCache(); return; }
+
+    /* 上一趟装载失败（loader 缺失 / 新版崩溃后回退）：记入坏版本名单，不再重试 */
+    if (/[?&]__hotfail=1/.test(location.search)){
+      var failVer = info.version || done || '';
       try {
-        document.open();
-        document.write(guardScript);   /* 先 write 看门狗（新文档 head 首段） */
-        document.write(html);          /* 再 write 主文档（head 解析完毕后自然衔接 body） */
-        document.close();
-      } catch (e) {
-        try { var s = document.getElementById('hot-hide'); if (s) s.parentNode.removeChild(s); } catch (e2) {}
-      }
-    };
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', doReplace);
-    else doReplace();
+        if (failVer) { bad[failVer] = Date.now(); localStorage.setItem('course-app-bad', JSON.stringify(bad)); }
+        sessionStorage.removeItem('course-hot-done');
+        sessionStorage.removeItem('course-hot-nav');
+      } catch(e){}
+      dropCache();
+      return;
+    }
+    /* 已尝试过装载但仍未生效（sessionStorage 记录），说明装载链路有问题，记为坏版本 */
+    var tried = '';
+    try { tried = sessionStorage.getItem('course-hot-nav') || ''; } catch(e){}
+    if (tried && tried === info.version){
+      try { bad[info.version] = Date.now(); localStorage.setItem('course-app-bad', JSON.stringify(bad)); } catch(e){}
+      dropCache();
+      return;
+    }
+
+    /* 交给专用装载页：本页主脚本一旦解析，顶层 const 就会占用全局词法环境，
+       loader.html 自身脚本极简、不占全局绑定，在那里整份替换才是安全的。
+       同时它先写 doctype，顺带治掉就地替换残留的 BackCompat 怪异模式。 */
+    /* 本页（内置版）接下来要转交装载页，它自己的启动工作全是白做的：
+       打上标记让内置版主脚本跳过渲染/网络/定时器，尤其是末尾那句
+       localStorage.setItem('course-app-ok', APP_VERSION) —— 内置版若抢先写入自己的
+       版本号，下一轮冷启动就会把已装载好的新版判成"启动失败"而丢弃。
+       location.replace 是新导航、新 Window，回跳到 ?__hotfail=1 时该属性为 undefined，
+       内置版仍能正常启动，不影响回跳场景。 */
+    window.__hotSwapPending = 1;
+    document.write('<style id="hot-hide">html,body{visibility:hidden !important}</style>');
+    try { sessionStorage.setItem('course-hot-nav', info.version); } catch(e){}
+    try { location.replace('./loader.html'); } catch(e){}
   }catch(e){}
 })();
 </script>
@@ -607,6 +640,41 @@ button{cursor:pointer;border:0;background:none}
   align-items:center;justify-content:center;
 }
 .fab:active{transform:scale(.94)}
+
+/* ============ Quiz 提醒（数据由本地 quiz-monitor 产出的 quiz-feed.json 提供） ============ */
+.btn.icon.qz{position:relative}
+.btn.icon.qz.has{background:color-mix(in srgb,var(--now) 14%,var(--panel));
+  border-color:color-mix(in srgb,var(--now) 42%,var(--line))}
+.qz-n{
+  position:absolute;top:-4px;right:-4px;min-width:15px;height:15px;padding:0 4px;
+  border-radius:9px;background:var(--now);color:#fff;font-size:10px;font-weight:800;
+  line-height:15px;text-align:center;border:1.5px solid var(--panel);box-sizing:content-box;
+}
+.qz-course{margin-bottom:14px}
+.qz-ct{display:flex;align-items:baseline;gap:6px;font-size:12.5px;font-weight:700;
+  color:var(--muted);margin-bottom:6px;line-height:1.35}
+.qz-ct .acc{font-weight:600;opacity:.75;flex:none}
+.qz-ct a{color:var(--accent);text-decoration:none;font-weight:600;flex:none;font-size:11.5px}
+.qz-item{
+  display:block;padding:9px 11px;margin-bottom:6px;border-radius:11px;
+  border:1px solid var(--line);background:var(--panel2);text-decoration:none;color:inherit;
+}
+.qz-item:active{transform:scale(.99)}
+.qz-item .nm{display:flex;align-items:center;gap:6px;font-size:13.5px;font-weight:600;line-height:1.35}
+.qz-item .nm .dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.qz-item .mt{margin-top:3px;font-size:11.5px;color:var(--muted);line-height:1.45;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.qz-item .go{margin-top:4px;font-size:11.5px;color:var(--accent);font-weight:600}
+.qz-item .nm .past{
+  margin-left:auto;flex:none;font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px;
+  background:var(--line2);color:var(--muted);
+}
+.qz-item.is-past{opacity:.5;background:transparent}
+.qz-item.is-past .nm .dot{background:var(--muted)}
+.qz-item .go.dim{color:var(--muted);font-weight:500}
+.qz-empty{padding:26px 6px;text-align:center;color:var(--muted);font-size:13px;line-height:1.7}
+.qz-foot-note{margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.6}
+
 .toast{
   position:fixed;left:50%;bottom:34px;transform:translate(-50%,20px);z-index:200;
   background:var(--text);color:var(--bg);padding:10px 18px;border-radius:11px;font-size:13.5px;
@@ -786,6 +854,7 @@ window.addEventListener('error', function () {
       <span class="ws-caret">▾</span>
     </span>
     <button class="btn icon" id="btnCompare" title="多人课表叠加对比：找共同空闲 / 谁有课" data-page-node-id="d9cmp">🔀</button>
+    <button class="btn icon qz" id="btnQuiz" title="Quiz 提醒（由本地监控程序同步）">📝<span class="qz-n" hidden></span></button>
     <button class="btn icon" id="btnSet" title="设置" data-page-node-id="DX6T06X896HGobXyGnBFHb">⚙️</button>
   </div>
 
@@ -6393,11 +6462,12 @@ else if (!cloudOn() && cloudGatePending()) openCloudGate();
      下次启动引导脚本会丢弃缓存、自动回退到内置版本。
    · 网页版（https 打开）不参与自检，打开的永远是最新的线上页面。
    ===================================================================== */
-const APP_VERSION = '2026.09.22.2';
+const APP_VERSION = '2026.10.13.1';
 const UPD_BASE    = 'https://anbaibai520.github.io/course-schedule/';
 const UPD_LS_INFO = 'course-app-upd';
 const UPD_LS_OK   = 'course-app-ok';
 const UPD_LS_HOT  = 'course-app-hot-html';
+const UPD_LS_BAD  = 'course-app-bad';   /* 坏版本名单：下载过但跑不起来的版本，不再重复下载 */
 
 function updIsApp(){
   return !!window.Capacitor || location.protocol === 'file:' ||
@@ -6699,6 +6769,14 @@ function updCheck(manual){
     .then(m => {
       const remote = String(m.version || '');
       if (!remote) throw new Error('线上版本号为空');
+      /* 已知跑不起来的版本不再下载，避免"下载→回滚→再下载"的死循环 */
+      let bad = {};
+      try { bad = JSON.parse(localStorage.getItem(UPD_LS_BAD) || '{}'); } catch(e){}
+      if (bad[remote]){
+        updSaveInfo(Object.assign({}, cur, { checkedAt: Date.now(), lastErr: '已跳过异常版本 ' + remote }));
+        if (manual) toast('已跳过异常版本 ' + remote + '，等待下一个版本');
+        return;
+      }
       updSaveInfo(Object.assign({}, cur, { checkedAt: Date.now(), lastOk: remote, lastErr: '' }));
       /* 以"正在运行的版本"为基准比较，而不是上次下载记录，避免重复下载同一版 */
       if (remote === APP_VERSION){ if (manual) toast('已是最新版本 ' + remote); return; }
@@ -6724,6 +6802,8 @@ function updRollback(){
   try {
     localStorage.removeItem(UPD_LS_HOT);
     localStorage.removeItem('course-app-pending');
+    /* 手动回退后清空坏版本名单：用户主动自救，允许再次尝试同一个版本 */
+    localStorage.removeItem(UPD_LS_BAD);
     const i = updInfo(); delete i.version; delete i.at;
     updSaveInfo(Object.assign({}, i, { lastErr: '' }));
   } catch(e){}
@@ -6742,12 +6822,192 @@ updAutoCheck();
    版本号，下一轮启动就会把它判成"新版启动失败"，从而静默丢弃更新。 */
 try {
   localStorage.setItem(UPD_LS_OK, APP_VERSION);
+  /* 启动成功即清除 pending：装载已完成且本版本确实跑起来了。
+     只清这一处、失败路径不碰，下一次冷启动的引导脚本才能凭 pending 是否残留
+     判断"上趟装载有没有确认过"。 */
+  localStorage.removeItem('course-app-pending');
   var __updOkEl = document.createElement('span');
   __updOkEl.id = '__upd_ok';
   __updOkEl.style.display = 'none';
   document.body.appendChild(__updOkEl);
 } catch(e){}
 }
+/* =====================================================================
+   Quiz 提醒
+   ---------------------------------------------------------------------
+   为什么不在 App 里直接抓 quiz：
+     抓取需要校园 SSO 登录态，而且要被 302 跳到 uim 的 SAML 端点自动 POST，
+     浏览器里跨域 + 登录态都过不去。所以抓取放在本机常驻的 quiz-monitor，
+     它把结果写成 quiz-feed.json 推到本仓库根目录；这里只做「取回来展示」。
+   数据新鲜度：启动时拉一次，之后每 5 分钟拉一次；断网时用 localStorage 缓存。
+   ===================================================================== */
+const QUIZ_FEED_URL = UPD_BASE + 'quiz-feed.json';
+const QUIZ_LS       = 'course-quiz-feed-v1';
+const QUIZ_FRESH_MS = 5 * 60 * 1000;
+
+const quizFeed = { data: null, at: 0, loading: false, err: '' };
+
+function quizLoadCache(){
+  try {
+    const o = JSON.parse(localStorage.getItem(QUIZ_LS) || 'null');
+    if (o && o.data){ quizFeed.data = o.data; quizFeed.at = o.at || 0; }
+  } catch(e){}
+}
+function quizSaveCache(){
+  try { localStorage.setItem(QUIZ_LS, JSON.stringify({ data: quizFeed.data, at: quizFeed.at })); } catch(e){}
+}
+/* 截止时间：把 feed 里的 "Closed: Thursday, 29 October 2026, 16:00" 解成 Date。
+   解析失败返回 null —— 当作「没截止」，宁可按未截止算，也不要漏掉提醒。 */
+const QUIZ_MON = { january:0, february:1, march:2, april:3, may:4, june:5,
+                   july:6, august:7, september:8, october:9, november:10, december:11 };
+function quizDeadline(raw){
+  const s = String(raw || '').replace(/\s+/g, ' ');
+  const i = s.search(/Close[ds]?/i);
+  if (i < 0) return null;
+  const m = s.slice(i, i + 70).match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4}),?\s*(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const mo = QUIZ_MON[m[2].toLowerCase()];
+  if (mo == null) return null;
+  const d = new Date(+m[3], mo, +m[1], +m[4], +m[5]);
+  return isNaN(d.getTime()) ? null : d;
+}
+function quizIsPast(q){
+  const d = quizDeadline(q && q.meta);
+  return !!d && d.getTime() < Date.now();
+}
+/* 角标只数「还没截止」的 —— 已截止的练习还挂在那里，但不用再提醒 */
+function quizCount(){
+  const d = quizFeed.data;
+  if (!d || !Array.isArray(d.courses)) return 0;
+  let n = 0;
+  d.courses.forEach(c => (c.quizzes || []).forEach(q => { if (!quizIsPast(q)) n++; }));
+  return n;
+}
+function quizBadge(){
+  const btn = $('#btnQuiz');
+  if (!btn) return;
+  const n = quizCount();
+  btn.classList.toggle('has', n > 0);
+  const b = btn.querySelector('.qz-n');
+  if (b){ b.textContent = n > 99 ? '99+' : String(n); b.hidden = n === 0; }
+  btn.title = n ? `有 ${n} 个 quiz 待处理` : '暂无 quiz（数据由本地监控程序同步）';
+}
+
+async function quizSync(force){
+  if (quizFeed.loading) return;
+  if (!force && quizFeed.data && Date.now() - quizFeed.at < QUIZ_FRESH_MS) return;
+  quizFeed.loading = true;
+  try {
+    const r = await fetch(QUIZ_FEED_URL + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (!d || typeof d.total !== 'number' || !Array.isArray(d.courses)) throw new Error('数据格式不对');
+    quizFeed.data = d; quizFeed.at = Date.now(); quizFeed.err = '';
+    quizSaveCache(); quizBadge();
+  } catch(e){
+    quizFeed.err = String((e && e.message) || e);
+  } finally {
+    quizFeed.loading = false;
+  }
+}
+
+/* "Opened: Thursday, 29 October 2026, 14:00 Closed: ..., 16:00" → "开 10/29 14:00 · 截止 10/29 16:00" */
+function quizMeta(raw){
+  const s = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  const MON = { january:1, february:2, march:3, april:4, may:5, june:6,
+                july:7, august:8, september:9, october:10, november:11, december:12 };
+  const grab = (kw) => {
+    const i = s.search(kw);
+    if (i < 0) return '';
+    const m = s.slice(i, i + 70).match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4}),?\s*(\d{1,2}:\d{2})/);
+    if (!m) return '';
+    const mo = MON[m[2].toLowerCase()];
+    return mo ? `${mo}/${m[1]} ${m[4]}` : '';
+  };
+  const op = grab(/Open(ed|s)?/i), cl = grab(/Close[ds]?/i);
+  const bits = [];
+  if (op) bits.push('开 ' + op);
+  if (cl) bits.push('截止 ' + cl);
+  /* 解析不出来就原样显示，别把信息弄丢 */
+  return bits.length ? bits.join(' · ') : s.slice(0, 80);
+}
+
+function quizBody(){
+  const d = quizFeed.data;
+  if (!d || !Array.isArray(d.courses))
+    return '<div class="qz-empty">还没有同步到数据。<br>本机监控程序跑过一轮后，这里会显示各门课的 quiz。</div>';
+
+  /* 只有一个账号时不重复打账号名，多账号时才用它区分 */
+  const accs = new Set(d.courses.map(c => c.account || ''));
+  const showAcc = accs.size > 1;
+
+  const courses = d.courses.filter(c => (c.quizzes || []).length);
+  if (!courses.length)
+    return '<div class="qz-empty">当前没有待处理的 quiz。<br>老师发布后几分钟内会自动出现在这里。</div>';
+  if (!quizCount() && !courses.some(c => (c.quizzes || []).some(q => !quizIsPast(q))))
+    return '<div class="qz-empty">当前没有待处理的 quiz。<br>' +
+           '页面上的都过了截止时间，下面可以翻看记录。</div>';
+
+  return courses.map(c => {
+    /* 未截止的排前面，同组内按截止时间从近到远；已截止的沉底 */
+    const list = (c.quizzes || []).slice().sort((a, b) => {
+      const pa = quizIsPast(a), pb = quizIsPast(b);
+      if (pa !== pb) return pa ? 1 : -1;
+      const da = quizDeadline(a.meta), db = quizDeadline(b.meta);
+      if (da && db) return da - db;
+      return 0;
+    });
+    const items = list.map(q => {
+      const past = quizIsPast(q);
+      const mt = quizMeta(q.meta);
+      const inner = `<div class="nm"><span class="dot"></span>${esc(q.name || '未命名 quiz')}` +
+                    (past ? '<span class="past">已截止</span>' : '') + '</div>' +
+                    (mt ? `<div class="mt">${esc(mt)}</div>` : '') +
+                    (q.url && !past ? '<div class="go">去答题 →</div>' : '') +
+                    (q.url && past ? '<div class="go dim">查看记录 →</div>' : '');
+      const cls = 'qz-item' + (past ? ' is-past' : '');
+      return q.url
+        ? `<a class="${cls}" href="${esc(q.url)}" target="_blank" rel="noopener">${inner}</a>`
+        : `<div class="${cls}">${inner}</div>`;
+    }).join('');
+    const acc = showAcc && c.account ? `<span class="acc">${esc(c.account)}</span>` : '';
+    const link = c.course_url
+      ? `<a href="${esc(c.course_url)}" target="_blank" rel="noopener">课程页</a>` : '';
+    return `<div class="qz-course"><div class="qz-ct">${acc}<span>${esc(c.course)}</span>${link}</div>${items}</div>`;
+  }).join('');
+}
+
+function quizOpen(){
+  quizSync(true);
+  const at = quizFeed.at
+    ? new Date(quizFeed.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  const note = quizFeed.err
+    ? `<div class="qz-foot-note">同步失败：${esc(quizFeed.err)}（显示的是上次成功的结果）</div>`
+    : `<div class="qz-foot-note">${at ? '数据更新于 ' + at + '，' : ''}由本机 quiz-monitor 每 2 分钟检查一次，发现新 quiz 会推微信。</div>`;
+  openModal('📝 Quiz 提醒', quizBody() + note,
+    `<div class="spacer"></div><button class="btn" data-quiz-refresh>刷新</button>` +
+    `<button class="btn primary" data-close>关闭</button>`);
+}
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (t && t.dataset && 'quizRefresh' in t.dataset){
+    quizSync(true).then(() => { if (!$('#modal').hidden) quizOpen(); });
+  }
+});
+
+/* 首次启动与定时同步。App 从 file:// 打开时同样能 fetch 远端 feed（GitHub Pages 带 CORS 头）。
+   整段包 try/catch：这块与课表主流程无关，绝不能因为它挂掉连累 App 启动。 */
+try {
+  quizLoadCache(); quizBadge();
+  setTimeout(() => { quizSync(false); }, 2500);
+  setInterval(() => { quizSync(false); }, QUIZ_FRESH_MS);
+  const _qzBtn = $('#btnQuiz');
+  if (_qzBtn) _qzBtn.addEventListener('click', quizOpen);
+} catch(e){}
+
 /* 收尾：对应文件开头的 (function(){ ... 见"为什么整段包在一个 IIFE 里" */
 }).call(window);
 </script>
